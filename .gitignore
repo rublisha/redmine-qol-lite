@@ -1,0 +1,4 @@
+.brave-smoke-profile/
+*.log
+.DS_Store
+Thumbs.db
