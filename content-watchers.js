@@ -22,10 +22,17 @@
       .rsq-watcher-filter { display:flex; gap:4px; align-items:center; margin:0 0 7px; font-size:11px; }
       .rsq-watcher-filter button, .rsq-watcher-panel button, .rsq-issue-groups button { min-height:27px; padding:3px 8px; border:1px solid #bdc9d3; border-radius:3px; background:#f7f9fb; color:#40566a; cursor:pointer; }
       .rsq-watcher-filter button.active { border-color:#4f86b8; background:#dfeefa; color:#315d84; font-weight:bold; }
+      .rsq-watcher-filter button.clear { color:#765858; }
       .rsq-watcher-filter .count { margin-left:auto; color:#6c7b87; }
       .rsq-watcher-panel { box-sizing:border-box; display:grid; align-content:start; gap:9px; max-height:100%; overflow:auto; padding:12px; border:1px solid #b8c9db; border-radius:4px; background:#f3f7fb; color:#33485c; }
       .rsq-watcher-panel h3 { margin:0; font-size:14px; }
-      .rsq-watcher-panel select { width:100%; min-height:32px; }
+      .rsq-group-list { display:grid; gap:4px; max-height:190px; overflow:auto; padding-right:2px; }
+      .rsq-watcher-panel .rsq-group-option { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-height:31px; padding:4px 8px; background:#fff; text-align:left; }
+      .rsq-watcher-panel .rsq-group-option:hover { border-color:#829fbb; background:#f8fbfe; }
+      .rsq-watcher-panel .rsq-group-option.active { border-color:#4f86b8; background:#dfeefa; color:#315d84; font-weight:bold; }
+      .rsq-group-option .group-count { flex:none; min-width:20px; padding:0 5px; border-radius:8px; background:#dce5ed; color:#536779; font-size:10px; line-height:16px; text-align:center; }
+      .rsq-group-option.active .group-count { background:#fff; color:#315d84; }
+      .rsq-group-empty { padding:8px; border:1px solid #d5dee7; background:#fff; color:#738291; font-size:11px; text-align:center; }
       .rsq-watcher-members { max-height:150px; overflow:auto; margin:0; padding:7px 7px 7px 24px; border:1px solid #d5dee7; background:#fff; font-size:11px; }
       .rsq-watcher-actions { display:grid; gap:6px; }
       .rsq-watcher-actions .primary { border-color:#3f78aa; background:#4f86b8; color:#fff; }
@@ -53,22 +60,26 @@
     return { id: String(box.value || box.dataset.userId || box.id || '').trim(), name: (label?.textContent || '').trim().replace(/\s+/g, ' ') };
   }
   async function persist() { await chrome.storage.local.set({ [GROUPS_KEY]: groups, [LAST_KEY]: lastGroup }); }
-  function selectedName(panel) { return panel.querySelector('.rsq-group-select')?.value || ''; }
+  function selectedName(panel) { return panel.dataset.selectedGroup || ''; }
 
   function fillGroupUi(panel, preferred = '') {
-    const select = panel.querySelector('.rsq-group-select');
+    const list = panel.querySelector('.rsq-group-list');
     const members = panel.querySelector('.rsq-watcher-members');
-    if (!select || !members) return;
+    if (!list || !members) return;
     const names = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'ru'));
     const selected = groups[preferred] ? preferred : (groups[lastGroup] ? lastGroup : names[0] || '');
-    select.replaceChildren();
+    panel.dataset.selectedGroup = selected;
+    list.replaceChildren();
     for (const name of names) {
-      const option = document.createElement('option');
-      option.value = name; option.textContent = `${name} (${groups[name].length})`; option.selected = name === selected;
-      select.appendChild(option);
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'rsq-group-option'; button.dataset.groupName = name;
+      button.classList.toggle('active', name === selected); button.setAttribute('aria-selected', String(name === selected));
+      const title = document.createElement('span'); title.textContent = name;
+      const count = document.createElement('span'); count.className = 'group-count'; count.textContent = groups[name].length;
+      button.append(title, count); list.appendChild(button);
     }
     if (!names.length) {
-      const option = document.createElement('option'); option.value = ''; option.textContent = 'Групп пока нет'; select.appendChild(option);
+      const empty = document.createElement('div'); empty.className = 'rsq-group-empty'; empty.textContent = 'Групп пока нет'; list.appendChild(empty);
     }
     members.replaceChildren();
     for (const member of groups[selected] || []) {
@@ -106,7 +117,7 @@
     panel.className = 'rsq-watcher-panel';
     panel.innerHTML = `
       <h3>Группы наблюдателей</h3>
-      <select class="rsq-group-select" aria-label="Группа наблюдателей"></select>
+      <div class="rsq-group-list" role="listbox" aria-label="Группы наблюдателей"></div>
       <ol class="rsq-watcher-members"></ol>
       <div class="rsq-watcher-actions">
         <button type="button" class="primary" data-action="apply">Отметить всю группу</button>
@@ -115,10 +126,14 @@
       </div>
       <div class="rsq-watcher-status" aria-live="polite"></div>`;
     fillGroupUi(panel);
-    panel.querySelector('.rsq-group-select').addEventListener('change', () => {
-      lastGroup = selectedName(panel); void persist(); fillGroupUi(panel, lastGroup); applyFilter(root);
-    });
     panel.addEventListener('click', async (event) => {
+      const groupButton = event.target.closest('button[data-group-name]');
+      if (groupButton) {
+        event.preventDefault(); event.stopPropagation();
+        lastGroup = groupButton.dataset.groupName;
+        await persist(); fillGroupUi(panel, lastGroup); applyFilter(root);
+        return;
+      }
       const button = event.target.closest('button[data-action]');
       if (!button) return;
       event.preventDefault(); event.stopPropagation();
@@ -166,12 +181,22 @@
       const layout = document.createElement('div'); layout.className = 'rsq-watcher-layout';
       const left = document.createElement('div');
       const filter = document.createElement('div'); filter.className = 'rsq-watcher-filter';
-      filter.innerHTML = '<button type="button" data-filter="all">Все</button><button type="button" data-filter="checked">Отмеченные</button><button type="button" data-filter="group">Группа</button><span class="count"></span>';
+      filter.innerHTML = '<button type="button" data-filter="all">Все</button><button type="button" data-filter="checked">Отмеченные</button><button type="button" data-filter="group">Группа</button><button type="button" class="clear" data-clear>Очистить</button><span class="count"></span>';
       const users = document.createElement('div'); users.className = 'rsq-watcher-users';
       while (host.firstChild) users.appendChild(host.firstChild);
       left.append(filter, users); layout.append(left); root.append(layout); host.append(root);
       layout.append(createPanel(root));
       filter.addEventListener('click', (event) => {
+        const clear = event.target.closest('button[data-clear]');
+        if (clear) {
+          for (const box of checkboxes(users)) {
+            if (!box.checked) continue;
+            box.checked = false;
+            box.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          applyFilter(root);
+          return;
+        }
         const button = event.target.closest('button[data-filter]'); if (!button) return;
         root.dataset.filter = button.dataset.filter; applyFilter(root);
       });
