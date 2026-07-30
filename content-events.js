@@ -34,7 +34,7 @@
       .rsq-events-controls { display:flex; align-items:center; gap:10px; padding:7px 11px; border-bottom:1px solid #e0e6eb; color:#647484; font-size:11px; }
       .rsq-events-controls label { display:flex; align-items:center; gap:4px; cursor:pointer; }
       .rsq-events-controls input { margin:0; }
-      .rsq-events-link { margin-left:auto; padding:0; border:0; background:none; color:#326b9b; cursor:pointer; font:inherit; }
+      .rsq-events-read-hint { margin-left:auto; color:#89959e; font-size:10px; }
       .rsq-events-list { overflow-y:auto; padding:5px; background:#f8fafb; }
       .rsq-event { position:relative; display:grid; gap:4px; margin-bottom:5px; padding:9px 10px 9px 12px; border:1px solid #d4dce3; border-left:3px solid #d4dce3; border-radius:4px; background:#fff; color:inherit; text-decoration:none!important; }
       .rsq-event:hover { border-color:#aebcc8; background:#fbfdff; }
@@ -113,12 +113,8 @@
     const filterText = document.createElement('span'); filterText.textContent = 'Только непрочитанные';
     filter.addEventListener('change', () => { unreadOnly = filter.checked; render(); });
     filterLabel.append(filter, filterText);
-    const readAll = document.createElement('button'); readAll.type = 'button'; readAll.className = 'rsq-events-link'; readAll.textContent = 'Прочитать всё';
-    readAll.addEventListener('click', async () => {
-      const keys = (feed.events || []).map((event) => event.key); if (!keys.length) return;
-      await chrome.runtime.sendMessage({ type: 'events.read', keys });
-    });
-    controls.append(filterLabel, readAll);
+    const readHint = document.createElement('span'); readHint.className = 'rsq-events-read-hint'; readHint.textContent = 'Сброс при закрытии';
+    controls.append(filterLabel, readHint);
     list = document.createElement('div'); list.className = 'rsq-events-list';
     const foot = document.createElement('div'); foot.className = 'rsq-events-foot';
     popover.append(head, controls, list, foot); document.body.appendChild(popover);
@@ -155,7 +151,7 @@
     if (event.comment) { const comment = document.createElement('span'); comment.className = 'rsq-event-comment'; comment.textContent = event.comment; link.appendChild(comment); }
     const tags = [event.project, ...(event.reasons || [])].filter(Boolean);
     if (tags.length) { const node = document.createElement('span'); node.className = 'rsq-event-tags'; node.textContent = tags.join(' · '); link.appendChild(node); }
-    link.addEventListener('click', () => { if (unread) void chrome.runtime.sendMessage({ type: 'events.read', keys: [event.key] }); });
+    link.addEventListener('click', markCurrentRead);
     return link;
   }
 
@@ -179,7 +175,21 @@
       finally { refreshing = false; }
     }
   }
-  function hide() { open = false; if (popover) popover.style.display = 'none'; }
+  function markCurrentRead() {
+    const keys = (feed.events || []).filter((event) => !feed.readKeys?.[event.key]).map((event) => event.key);
+    if (!keys.length) return;
+    const readKeys = { ...(feed.readKeys || {}) };
+    for (const key of keys) readKeys[key] = true;
+    feed = { ...feed, readKeys };
+    updateButton();
+    void chrome.runtime.sendMessage({ type: 'events.read', keys }).catch(() => {});
+  }
+  function hide() {
+    if (!open) return;
+    open = false;
+    if (popover) popover.style.display = 'none';
+    markCurrentRead();
+  }
   function toggle() { if (open) hide(); else void show(); }
 
   ensureStyles(); createButton();
