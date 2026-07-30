@@ -8,6 +8,7 @@
   let groups = {};
   let lastGroup = '';
   let scheduled = false;
+  const dialogStates = new Map();
 
   function ensureStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -58,6 +59,42 @@
   function memberOf(box) {
     const label = box.closest('label') || (box.id ? document.querySelector(`label[for="${CSS.escape(box.id)}"]`) : null);
     return { id: String(box.value || box.dataset.userId || box.id || '').trim(), name: (label?.textContent || '').trim().replace(/\s+/g, ' ') };
+  }
+  function dialogScope(host) { return host.closest('#ajax-modal') || host.closest('.ui-dialog') || host; }
+  function stateFor(host) {
+    const scope = dialogScope(host);
+    let state = dialogStates.get(scope);
+    if (!state) {
+      const selected = new Map();
+      for (const box of checkboxes(host)) {
+        if (!box.checked) continue;
+        const member = memberOf(box);
+        if (member.id) selected.set(member.id, member);
+      }
+      state = { selected, filter: 'all' };
+      dialogStates.set(scope, state);
+    }
+    return state;
+  }
+  function rememberSelection(host, box) {
+    const member = memberOf(box);
+    if (!member.id) return;
+    const selected = stateFor(host).selected;
+    if (box.checked) selected.set(member.id, member);
+    else selected.delete(member.id);
+  }
+  function restoreSelection(host, state) {
+    for (const box of checkboxes(host)) {
+      const member = memberOf(box);
+      box.checked = state.selected.has(member.id);
+      if (box.checked) state.selected.set(member.id, member);
+    }
+  }
+  function pruneDialogStates() {
+    for (const scope of dialogStates.keys()) {
+      const hasHost = scope.id === 'users_for_watcher' || Boolean(scope.querySelector?.('#users_for_watcher'));
+      if (!scope.isConnected || !hasHost) dialogStates.delete(scope);
+    }
   }
   async function persist() { await chrome.storage.local.set({ [GROUPS_KEY]: groups, [LAST_KEY]: lastGroup }); }
   function selectedName(panel) { return panel.dataset.selectedGroup || ''; }
@@ -112,7 +149,7 @@
     node.textContent = text; node.classList.toggle('error', error);
   }
 
-  function createPanel(root) {
+  function createPanel(root, state) {
     const panel = document.createElement('section');
     panel.className = 'rsq-watcher-panel';
     panel.innerHTML = `
@@ -144,14 +181,16 @@
         const byId = new Map(boxes.map((box) => [memberOf(box).id, box]));
         const missing = [];
         for (const member of groups[name] || []) {
-          const box = byId.get(String(member.id));
+          const id = String(member.id);
+          state.selected.set(id, { id, name: member.name || '' });
+          const box = byId.get(id);
           if (box) { box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); }
           else missing.push(member.name || member.id);
         }
         setPanelStatus(panel, missing.length ? `Не найдены: ${missing.join(', ')}` : `Группа «${name}» отмечена.`, missing.length > 0);
       }
       if (action === 'save') {
-        const chosen = boxes.filter((box) => box.checked).map(memberOf).filter((member) => member.id);
+        const chosen = [...state.selected.values()];
         if (!chosen.length) { setPanelStatus(panel, 'Сначала отметьте пользователей.', true); return; }
         const raw = prompt('Название группы:', selectedName(panel));
         if (raw === null) return;
@@ -174,10 +213,12 @@
 
   function mountDialog() {
     for (const host of document.querySelectorAll('#users_for_watcher')) {
-      if (host.dataset.rsqMounted === '1' || !checkboxes(host).length) continue;
+      if (host.querySelector('.rsq-watcher-root') || !checkboxes(host).length) continue;
+      const state = stateFor(host);
+      restoreSelection(host, state);
       host.dataset.rsqMounted = '1';
       host.classList.add('rsq-watcher-host');
-      const root = document.createElement('div'); root.className = 'rsq-watcher-root'; root.dataset.filter = 'all';
+      const root = document.createElement('div'); root.className = 'rsq-watcher-root'; root.dataset.filter = state.filter;
       const layout = document.createElement('div'); layout.className = 'rsq-watcher-layout';
       const left = document.createElement('div');
       const filter = document.createElement('div'); filter.className = 'rsq-watcher-filter';
@@ -185,10 +226,11 @@
       const users = document.createElement('div'); users.className = 'rsq-watcher-users';
       while (host.firstChild) users.appendChild(host.firstChild);
       left.append(filter, users); layout.append(left); root.append(layout); host.append(root);
-      layout.append(createPanel(root));
+      layout.append(createPanel(root, state));
       filter.addEventListener('click', (event) => {
         const clear = event.target.closest('button[data-clear]');
         if (clear) {
+          state.selected.clear();
           for (const box of checkboxes(users)) {
             if (!box.checked) continue;
             box.checked = false;
@@ -198,9 +240,12 @@
           return;
         }
         const button = event.target.closest('button[data-filter]'); if (!button) return;
-        root.dataset.filter = button.dataset.filter; applyFilter(root);
+        state.filter = button.dataset.filter; root.dataset.filter = state.filter; applyFilter(root);
       });
-      users.addEventListener('change', () => applyFilter(root));
+      users.addEventListener('change', (event) => {
+        if (event.target.matches('input[type="checkbox"]')) rememberSelection(host, event.target);
+        applyFilter(root);
+      });
       const dialog = host.closest('.ui-dialog') || host.closest('#ajax-modal')?.closest('.ui-dialog');
       if (dialog) dialog.classList.add('rsq-dialog-wide');
       applyFilter(root);
@@ -245,7 +290,7 @@
     row.append(select, button, status); box.appendChild(row);
   }
 
-  function run() { scheduled = false; mountDialog(); mountIssueQuickAdd(); }
+  function run() { scheduled = false; pruneDialogStates(); mountDialog(); mountIssueQuickAdd(); }
   function schedule() { if (!scheduled) { scheduled = true; queueMicrotask(run); } }
 
   chrome.storage.local.get([GROUPS_KEY, LAST_KEY]).then((data) => {
