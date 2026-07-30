@@ -2,7 +2,7 @@
   'use strict';
 
   const SCRIPT_ID = 'redmine-small-qol';
-  const SCRIPT_FILES = ['content-common.js', 'content-watchers.js', 'content-preview.js', 'content-events.js', 'content-history.js', 'content-favorites.js'];
+  const SCRIPT_FILES = ['content-common.js', 'content-watchers.js', 'content-preview.js', 'content-events.js', 'content-history.js', 'content-favorites.js', 'content-drafts.js'];
   const ALARM = 'redmine-events';
   const FEED_KEY = 'eventFeed';
   const FEED_SCHEMA = 3;
