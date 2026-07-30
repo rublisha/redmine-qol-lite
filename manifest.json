@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Redmine QOL Lite",
   "description": "Группы наблюдателей, превью задач и компактная лента событий внутри Redmine.",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "permissions": ["storage", "scripting", "alarms"],
   "optional_host_permissions": ["https://*/*"],
   "icons": {

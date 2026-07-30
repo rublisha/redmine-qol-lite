@@ -9,6 +9,7 @@
   const MAX_ISSUES = 60;
   const MAX_EVENTS = 150;
   const DETAIL_LIMIT = 10;
+  const MAX_KNOWN_WATCHERS = 2000;
 
   const fieldLabels = {
     status_id: 'статус', priority_id: 'приоритет', tracker_id: 'трекер', fixed_version_id: 'версия',
@@ -22,6 +23,7 @@
   };
 
   let refreshPromise = null;
+  let refreshIsForced = false;
 
   function normalize(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function permissionPattern(value) {
@@ -113,6 +115,30 @@
     }));
     return output;
   }
+  function uniqueCandidates(items, limit) {
+    const seen = new Set();
+    const output = [];
+    for (const item of items) {
+      const id = String(item.issue.id);
+      if (seen.has(id)) continue;
+      seen.add(id); output.push(item);
+      if (output.length >= limit) break;
+    }
+    return output;
+  }
+  function rememberWatcherIds(previousIds, currentIds) {
+    const ordered = new Map();
+    for (const raw of previousIds || []) {
+      const id = String(raw || '');
+      if (id) ordered.set(id, true);
+    }
+    for (const raw of currentIds) {
+      const id = String(raw || '');
+      if (!id) continue;
+      ordered.delete(id); ordered.set(id, true);
+    }
+    return [...ordered.keys()].slice(-MAX_KNOWN_WATCHERS);
+  }
 
   function addName(names, kind, value) {
     if (value?.id !== undefined && value?.name) names[`${kind}:${value.id}`] = value.name;
@@ -165,13 +191,32 @@
       reasons,
     };
   }
+  function toWatcherDiscoveryEvent(issue, reasons, discoveredAt, isNew) {
+    return {
+      key: `${issue.id}:watcher-discovered`,
+      issueId: issue.id,
+      journalId: 0,
+      noteNumber: 0,
+      version: issue.fixed_version?.name || '',
+      subject: issue.subject || '',
+      project: issue.project?.name || '',
+      status: issue.status?.name || '',
+      actor: isNew ? (issue.author?.name || '') : '',
+      at: isNew ? (issue.created_on || discoveredAt) : discoveredAt,
+      summary: isNew ? 'создал задачу' : 'задача появилась в наблюдаемых',
+      changes: [],
+      comment: '',
+      reasons,
+    };
+  }
   function meaningful(journal) { return Boolean(String(journal?.notes || '').trim() || journal?.details?.length); }
 
-  async function doRefreshEvents() {
+  async function doRefreshEvents(forceRecent = false) {
     const settings = await getSettings();
     if (!settings.baseUrl || !settings.apiKey || !await allowed(settings.baseUrl)) return { ok: false, error: 'Расширение не настроено.' };
 
     const feed = await getFeedIssues(settings);
+    const checkedAt = new Date().toISOString();
     const { [FEED_KEY]: stored } = await chrome.storage.local.get(FEED_KEY);
     const previous = stored?.schema === FEED_SCHEMA
       ? stored
@@ -185,9 +230,13 @@
         initialized: true,
         issueVersions: Object.fromEntries(feed.map(({ issue }) => [String(issue.id), issue.updated_on || ''])),
         lastJournalIds: {},
+        knownWatcherIssueIds: feed
+          .filter(({ reasons }) => reasons.includes('наблюдатель'))
+          .map(({ issue }) => String(issue.id)),
+        watcherDiscoveryReady: true,
         events: [],
         readKeys: {},
-        checkedAt: new Date().toISOString(),
+        checkedAt,
       };
       await chrome.storage.local.set({ [FEED_KEY]: initial });
       await updateBadge(initial);
@@ -204,7 +253,15 @@
       // событием не считаем; новая должна быть обновлена после прошлой проверки.
       return Boolean(current && previous.checkedAt && current > previous.checkedAt);
     });
-    const candidates = changed.slice(0, DETAIL_LIMIT);
+    const watched = feed.filter(({ reasons }) => reasons.includes('наблюдатель'));
+    const discoveryHistory = previous.watcherDiscoveryReady === true
+      ? (previous.knownWatcherIssueIds || [])
+      : Object.keys(previous.issueVersions || {});
+    const knownWatcherIds = new Set(discoveryHistory.map(String));
+    const newlyWatched = watched.filter(({ issue }) => !knownWatcherIds.has(String(issue.id)));
+    const candidates = forceRecent
+      ? uniqueCandidates(feed, DETAIL_LIMIT)
+      : uniqueCandidates([...newlyWatched, ...changed], DETAIL_LIMIT);
     const details = await mapLimit(candidates, 4, async ({ issue, reasons }) => {
       try {
         const data = await requestJson(settings, `/issues/${issue.id}.json?include=journals`);
@@ -235,6 +292,13 @@
       }
       if (journals.length) lastJournalIds[String(issue.id)] = journals[journals.length - 1].id;
     }
+    const freshIssueIds = new Set(freshEvents.map((event) => String(event.issueId)));
+    for (const item of newlyWatched) {
+      const id = String(item.issue.id);
+      if (freshIssueIds.has(id)) continue;
+      const isNew = Boolean(item.issue.created_on && previous.checkedAt && item.issue.created_on > previous.checkedAt);
+      freshEvents.push(toWatcherDiscoveryEvent(item.issue, item.reasons, checkedAt, isNew));
+    }
 
     const byKey = new Map();
     for (const event of [...freshEvents, ...(previous.events || [])]) if (!byKey.has(event.key)) byKey.set(event.key, event);
@@ -253,17 +317,36 @@
       const needsRetry = changedIds.has(id) && !loadedIds.has(id);
       return [id, needsRetry ? (previous.issueVersions[id] || previous.checkedAt || '') : current];
     }));
-    const next = { schema: FEED_SCHEMA, initialized: true, issueVersions, lastJournalIds, events, readKeys, checkedAt: new Date().toISOString() };
+    const knownWatcherIssueIds = rememberWatcherIds(
+      previous.watcherDiscoveryReady === true ? previous.knownWatcherIssueIds : [],
+      watched.map(({ issue }) => issue.id),
+    );
+    const next = {
+      schema: FEED_SCHEMA,
+      initialized: true,
+      issueVersions,
+      lastJournalIds,
+      knownWatcherIssueIds,
+      watcherDiscoveryReady: true,
+      events,
+      readKeys,
+      checkedAt,
+    };
     await chrome.storage.local.set({ [FEED_KEY]: next });
     await updateBadge(next);
     return { ok: true, added: freshEvents.length };
   }
 
-  function refreshEvents() {
-    if (!refreshPromise) refreshPromise = doRefreshEvents().catch((error) => {
+  function refreshEvents(forceRecent = false) {
+    if (refreshPromise) {
+      if (forceRecent && !refreshIsForced) return refreshPromise.then(() => refreshEvents(true));
+      return refreshPromise;
+    }
+    refreshIsForced = forceRecent;
+    refreshPromise = doRefreshEvents(forceRecent).catch((error) => {
       console.warn('[Redmine QOL Lite] Обновление событий не удалось:', error);
       return { ok: false, error: error instanceof Error ? error.message : 'Ошибка обновления.' };
-    }).finally(() => { refreshPromise = null; });
+    }).finally(() => { refreshPromise = null; refreshIsForced = false; });
     return refreshPromise;
   }
   function unreadCount(feed) { return (feed?.events || []).filter((event) => !feed.readKeys?.[event.key]).length; }
@@ -295,7 +378,7 @@
       }).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Ошибка настройки.' }));
       return true;
     }
-    if (message?.type === 'events.refresh') { refreshEvents().then(sendResponse); return true; }
+    if (message?.type === 'events.refresh') { refreshEvents(message.forceRecent === true).then(sendResponse); return true; }
     if (message?.type === 'events.read') { markRead(message.keys || []).then(() => sendResponse({ ok: true })); return true; }
     return false;
   });

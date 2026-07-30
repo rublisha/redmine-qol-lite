@@ -104,7 +104,7 @@
     refresh.addEventListener('click', async () => {
       if (refreshing) return;
       refreshing = true; refresh.disabled = true; refresh.textContent = '…';
-      try { await chrome.runtime.sendMessage({ type: 'events.refresh' }); }
+      try { await chrome.runtime.sendMessage({ type: 'events.refresh', forceRecent: true }); }
       finally { refreshing = false; refresh.disabled = false; refresh.textContent = '↻'; }
     });
     const close = document.createElement('button'); close.type = 'button'; close.className = 'rsq-events-icon'; close.textContent = '×'; close.title = 'Закрыть'; close.addEventListener('click', hide);
@@ -138,7 +138,8 @@
   function eventNode(event) {
     const unread = !feed.readKeys?.[event.key];
     const link = document.createElement('a'); link.className = `rsq-event${unread ? ' unread' : ''}`;
-    link.href = `${redmineBaseUrl}/issues/${event.issueId}#note-${event.noteNumber || event.journalId}`;
+    const noteTarget = event.noteNumber || event.journalId;
+    link.href = `${redmineBaseUrl}/issues/${event.issueId}${noteTarget ? `#note-${noteTarget}` : ''}`;
     const head = document.createElement('span'); head.className = 'rsq-event-head';
     const id = document.createElement('span'); id.className = 'rsq-event-id'; id.textContent = `#${event.issueId}`;
     const status = document.createElement('span'); status.className = 'rsq-event-status'; status.textContent = event.status || 'задача';
@@ -147,11 +148,13 @@
     head.append(id, status, time);
     const subject = document.createElement('span'); subject.className = 'rsq-event-subject'; subject.textContent = event.subject || '';
     const action = document.createElement('span'); action.className = 'rsq-event-action';
-    const actor = document.createElement('strong'); actor.textContent = event.actor || 'Кто-то';
-    const summary = event.changes?.length
+    const summary = event.summary || (event.changes?.length
       ? event.changes.slice(0, 2).map(correctChangeGrammar).join(', ')
-      : (event.comment ? 'добавил комментарий' : 'обновил задачу');
-    action.append(actor, document.createTextNode(` · ${summary}`));
+      : (event.comment ? 'добавил комментарий' : 'обновил задачу'));
+    if (event.actor) {
+      const actor = document.createElement('strong'); actor.textContent = event.actor;
+      action.append(actor, document.createTextNode(` · ${summary}`));
+    } else action.textContent = summary;
     link.append(head, subject, action);
     if (event.comment) { const comment = document.createElement('span'); comment.className = 'rsq-event-comment'; comment.textContent = event.comment; link.appendChild(comment); }
     const tags = [event.project, ...(event.reasons || [])].filter(Boolean);
