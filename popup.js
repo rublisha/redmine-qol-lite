@@ -14,7 +14,7 @@
   function normalized(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function pattern(value) {
     const url = new URL(normalized(value));
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Разрешены только http:// и https:// адреса.');
+    if (url.protocol !== 'https:') throw new Error('Redmine должен быть доступен по защищённому адресу https://.');
     return `${url.origin}/*`;
   }
   function setStatus(text, tone = '') {
