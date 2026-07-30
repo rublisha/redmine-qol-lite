@@ -23,7 +23,8 @@
       .rsq-watcher-filter { display:flex; gap:4px; align-items:center; margin:0 0 7px; font-size:11px; }
       .rsq-watcher-filter button, .rsq-watcher-panel button, .rsq-issue-groups button { min-height:27px; padding:3px 8px; border:1px solid #bdc9d3; border-radius:3px; background:#f7f9fb; color:#40566a; cursor:pointer; }
       .rsq-watcher-filter button.active { border-color:#4f86b8; background:#dfeefa; color:#315d84; font-weight:bold; }
-      .rsq-watcher-filter button.clear { color:#765858; }
+      .rsq-watcher-filter button.clear { min-height:auto; padding:3px 2px; border-color:transparent; background:transparent; color:#8a5555; text-decoration:underline; text-underline-offset:2px; }
+      .rsq-watcher-filter button.clear:hover { color:#a33e2f; }
       .rsq-watcher-filter .count { margin-left:auto; color:#6c7b87; }
       .rsq-watcher-panel { box-sizing:border-box; display:grid; align-content:start; gap:9px; max-height:100%; overflow:auto; padding:12px; border:1px solid #b8c9db; border-radius:4px; background:#f3f7fb; color:#33485c; }
       .rsq-watcher-panel h3 { margin:0; font-size:14px; }
@@ -37,6 +38,7 @@
       .rsq-watcher-members { max-height:150px; overflow:auto; margin:0; padding:7px 7px 7px 24px; border:1px solid #d5dee7; background:#fff; font-size:11px; }
       .rsq-watcher-actions { display:grid; gap:6px; }
       .rsq-watcher-actions .primary { border-color:#3f78aa; background:#4f86b8; color:#fff; }
+      .rsq-watcher-actions button[hidden] { display:none; }
       .rsq-watcher-status { min-height:16px; color:#536577; font-size:11px; }
       .rsq-watcher-status.error { color:#a33e2f; }
       .rsq-dialog-wide { position:fixed!important; top:50%!important; left:50%!important; width:min(920px,calc(100vw - 20px))!important; max-width:calc(100vw - 20px)!important; max-height:calc(100vh - 16px)!important; margin:0!important; transform:translate(-50%,-50%)!important; }
@@ -64,14 +66,14 @@
   function stateFor(host) {
     const scope = dialogScope(host);
     let state = dialogStates.get(scope);
-    if (!state) {
+    if (!state || state.host !== host) {
       const selected = new Map();
       for (const box of checkboxes(host)) {
         if (!box.checked) continue;
         const member = memberOf(box);
         if (member.id) selected.set(member.id, member);
       }
-      state = { selected, filter: 'all' };
+      state = { host, selected, filter: 'all' };
       dialogStates.set(scope, state);
     }
     return state;
@@ -98,6 +100,15 @@
   }
   async function persist() { await chrome.storage.local.set({ [GROUPS_KEY]: groups, [LAST_KEY]: lastGroup }); }
   function selectedName(panel) { return panel.dataset.selectedGroup || ''; }
+  function editingName(panel) { return panel.dataset.editingGroup || ''; }
+
+  function setEditingMode(panel, name = '') {
+    panel.dataset.editingGroup = name;
+    const save = panel.querySelector('[data-action="save"]');
+    const cancel = panel.querySelector('[data-action="cancel-edit"]');
+    save.textContent = name ? 'Сохранить изменения…' : 'Сохранить отмеченных…';
+    cancel.hidden = !name;
+  }
 
   function fillGroupUi(panel, preferred = '') {
     const list = panel.querySelector('.rsq-group-list');
@@ -124,6 +135,7 @@
     }
     if (!members.children.length) { const item = document.createElement('li'); item.textContent = 'Состав группы пуст'; members.appendChild(item); }
     panel.querySelector('[data-action="apply"]').disabled = !selected;
+    panel.querySelector('[data-action="edit"]').disabled = !selected;
     panel.querySelector('[data-action="delete"]').disabled = !selected;
   }
 
@@ -133,15 +145,13 @@
     const selected = selectedName(panel);
     const groupIds = new Set((groups[selected] || []).map((member) => String(member.id)));
     const boxes = checkboxes(root.querySelector('.rsq-watcher-users'));
-    let visible = 0;
     for (const box of boxes) {
       const row = box.closest('label,li,tr,p') || box.parentElement;
       const show = mode === 'all' || (mode === 'checked' && box.checked) || (mode === 'group' && groupIds.has(memberOf(box).id));
       if (row) row.style.display = show ? '' : 'none';
-      if (show) visible += 1;
     }
     for (const button of root.querySelectorAll('[data-filter]')) button.classList.toggle('active', button.dataset.filter === mode);
-    root.querySelector('.rsq-watcher-filter .count').textContent = `${visible} из ${boxes.length}`;
+    root.querySelector('.rsq-watcher-filter .count').textContent = `Выбрано: ${boxes.filter((box) => box.checked).length}`;
   }
 
   function setPanelStatus(panel, text, error = false) {
@@ -158,7 +168,9 @@
       <ol class="rsq-watcher-members"></ol>
       <div class="rsq-watcher-actions">
         <button type="button" class="primary" data-action="apply">Отметить всю группу</button>
+        <button type="button" data-action="edit">Редактировать группу…</button>
         <button type="button" data-action="save">Сохранить отмеченных…</button>
+        <button type="button" data-action="cancel-edit" hidden>Отменить редактирование</button>
         <button type="button" data-action="delete">Удалить группу</button>
       </div>
       <div class="rsq-watcher-status" aria-live="polite"></div>`;
@@ -168,7 +180,7 @@
       if (groupButton) {
         event.preventDefault(); event.stopPropagation();
         lastGroup = groupButton.dataset.groupName;
-        await persist(); fillGroupUi(panel, lastGroup); applyFilter(root);
+        setEditingMode(panel); await persist(); fillGroupUi(panel, lastGroup); applyFilter(root);
         return;
       }
       const button = event.target.closest('button[data-action]');
@@ -176,6 +188,19 @@
       event.preventDefault(); event.stopPropagation();
       const boxes = checkboxes(root.querySelector('.rsq-watcher-users'));
       const action = button.dataset.action;
+      if (action === 'edit') {
+        const name = selectedName(panel);
+        if (!name) return;
+        state.selected.clear();
+        for (const member of groups[name] || []) {
+          const id = String(member.id);
+          state.selected.set(id, { id, name: member.name || '' });
+        }
+        restoreSelection(root.querySelector('.rsq-watcher-users'), state);
+        setEditingMode(panel, name);
+        root.dataset.filter = 'all'; state.filter = 'all';
+        setPanelStatus(panel, `Редактирование группы «${name}»: измените отметки и сохраните.`);
+      }
       if (action === 'apply') {
         const name = selectedName(panel);
         const byId = new Map(boxes.map((box) => [memberOf(box).id, box]));
@@ -192,18 +217,25 @@
       if (action === 'save') {
         const chosen = [...state.selected.values()];
         if (!chosen.length) { setPanelStatus(panel, 'Сначала отметьте пользователей.', true); return; }
-        const raw = prompt('Название группы:', selectedName(panel));
+        const oldName = editingName(panel);
+        const raw = prompt(oldName ? 'Название группы:' : 'Название новой группы:', oldName);
         if (raw === null) return;
         const name = raw.trim();
         if (!name) { setPanelStatus(panel, 'Название не может быть пустым.', true); return; }
-        if (groups[name] && !confirm(`Заменить группу «${name}»?`)) return;
-        groups[name] = chosen; lastGroup = name; await persist(); fillGroupUi(panel, name);
-        setPanelStatus(panel, `Сохранено: ${chosen.length} чел.`);
+        if (name !== oldName && groups[name] && !confirm(`Заменить группу «${name}»?`)) return;
+        if (oldName && oldName !== name) delete groups[oldName];
+        groups[name] = chosen; lastGroup = name; setEditingMode(panel); await persist(); fillGroupUi(panel, name);
+        setPanelStatus(panel, oldName ? `Группа «${name}» обновлена: ${chosen.length} чел.` : `Сохранено: ${chosen.length} чел.`);
+      }
+      if (action === 'cancel-edit') {
+        const name = editingName(panel);
+        setEditingMode(panel);
+        setPanelStatus(panel, name ? `Редактирование группы «${name}» отменено.` : '');
       }
       if (action === 'delete') {
         const name = selectedName(panel);
         if (!name || !confirm(`Удалить группу «${name}»?`)) return;
-        delete groups[name]; lastGroup = ''; await persist(); fillGroupUi(panel);
+        delete groups[name]; lastGroup = ''; setEditingMode(panel); await persist(); fillGroupUi(panel);
         setPanelStatus(panel, `Группа «${name}» удалена.`);
       }
       applyFilter(root);
@@ -222,7 +254,7 @@
       const layout = document.createElement('div'); layout.className = 'rsq-watcher-layout';
       const left = document.createElement('div');
       const filter = document.createElement('div'); filter.className = 'rsq-watcher-filter';
-      filter.innerHTML = '<button type="button" data-filter="all">Все</button><button type="button" data-filter="checked">Отмеченные</button><button type="button" data-filter="group">Группа</button><button type="button" class="clear" data-clear>Очистить</button><span class="count"></span>';
+      filter.innerHTML = '<button type="button" data-filter="all">Все</button><button type="button" data-filter="checked">Выбранные</button><button type="button" data-filter="group">Группа</button><span class="count"></span><button type="button" class="clear" data-clear>Очистить</button>';
       const users = document.createElement('div'); users.className = 'rsq-watcher-users';
       while (host.firstChild) users.appendChild(host.firstChild);
       left.append(filter, users); layout.append(left); root.append(layout); host.append(root);

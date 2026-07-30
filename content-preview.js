@@ -5,6 +5,7 @@
   const STYLE_ID = 'rsq-preview-style';
   const SHOW_DELAY = 350;
   const HIDE_DELAY = 180;
+  const BELOW_OFFSET = 26;
   const cache = new Map();
   let card = null;
   let activeLink = null;
@@ -45,7 +46,7 @@
     const rect = link.getBoundingClientRect();
     box.style.visibility = 'hidden'; box.style.display = 'block';
     const height = box.offsetHeight; const width = box.offsetWidth;
-    const below = rect.bottom + 7;
+    const below = rect.bottom + BELOW_OFFSET;
     const top = below + height > innerHeight - 8 ? Math.max(8, rect.top - height - 7) : below;
     box.style.top = `${top}px`;
     box.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
