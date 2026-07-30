@@ -22,6 +22,7 @@
       .rsq-favorites-chevron { width:14px; color:#7a8995; font-size:10px; }
       .rsq-favorites-count { margin-left:4px; color:#7a8995; font-size:11px; font-weight:400; }
       .rsq-favorites-list { display:grid; gap:2px; max-height:190px; overflow-y:auto; padding-right:3px; }
+      .rsq-favorites-list[hidden] { display:none; }
       .rsq-favorite-item { display:grid; grid-template-columns:minmax(0,1fr) 18px; align-items:start; gap:3px; }
       .rsq-favorite-link { display:block; min-width:0; overflow:hidden; color:#169; font-size:11px; line-height:1.35; text-decoration:none; text-overflow:ellipsis; white-space:nowrap; }
       .rsq-favorite-link:hover { color:#c61a1a; text-decoration:underline; }

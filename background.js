@@ -140,7 +140,8 @@
     if (detail.property === 'relation') return 'изменены связи задачи';
     if (detail.property === 'cf') return 'изменено дополнительное поле';
     const label = fieldLabels[detail.name] || detail.name || 'поле';
-    if (['description', 'subject'].includes(detail.name)) return `${label} изменена`;
+    if (detail.name === 'description') return `${label} изменено`;
+    if (detail.name === 'subject') return `${label} изменена`;
     const from = resolveValue(names, detail.name, detail.old_value);
     const to = resolveValue(names, detail.name, detail.new_value);
     if (!to) return `${label} очищен`;

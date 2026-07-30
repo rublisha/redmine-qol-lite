@@ -66,6 +66,9 @@
     return new Date(value).toLocaleDateString('ru');
   }
   function unreadEvents() { return (feed.events || []).filter((event) => !feed.readKeys?.[event.key]); }
+  function correctChangeGrammar(value) {
+    return value === 'описание изменена' ? 'описание изменено' : value;
+  }
   function updateButton() {
     if (!button) return;
     const count = unreadEvents().length;
@@ -145,7 +148,9 @@
     const subject = document.createElement('span'); subject.className = 'rsq-event-subject'; subject.textContent = event.subject || '';
     const action = document.createElement('span'); action.className = 'rsq-event-action';
     const actor = document.createElement('strong'); actor.textContent = event.actor || 'Кто-то';
-    const summary = event.changes?.length ? event.changes.slice(0, 2).join(', ') : (event.comment ? 'добавил комментарий' : 'обновил задачу');
+    const summary = event.changes?.length
+      ? event.changes.slice(0, 2).map(correctChangeGrammar).join(', ')
+      : (event.comment ? 'добавил комментарий' : 'обновил задачу');
     action.append(actor, document.createTextNode(` · ${summary}`));
     link.append(head, subject, action);
     if (event.comment) { const comment = document.createElement('span'); comment.className = 'rsq-event-comment'; comment.textContent = event.comment; link.appendChild(comment); }
