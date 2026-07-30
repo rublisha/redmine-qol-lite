@@ -5,9 +5,11 @@
   const baseUrl = document.getElementById('base-url');
   const apiKey = document.getElementById('api-key');
   const pollMinutes = document.getElementById('poll-minutes');
+  const showBadge = document.getElementById('show-badge');
   const save = document.getElementById('save');
   const status = document.getElementById('status');
   let previousBaseUrl = '';
+  let statusRun = 0;
 
   function normalized(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function pattern(value) {
@@ -19,16 +21,54 @@
     status.textContent = text;
     status.className = tone;
   }
+  async function checkConnection(settings) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`${settings.baseUrl}/users/current.json`, {
+        headers: { 'X-Redmine-API-Key': settings.apiKey },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Redmine отклонил подключение (${response.status}).`);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('Redmine не ответил за 15 секунд. Проверьте VPN и адрес.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  function checkedNow() {
+    return new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+  }
 
-  chrome.storage.local.get('settings').then(({ settings }) => {
+  chrome.storage.local.get('settings').then(async ({ settings }) => {
     previousBaseUrl = settings?.baseUrl || '';
     baseUrl.value = previousBaseUrl;
     apiKey.value = settings?.apiKey || '';
     pollMinutes.value = String(settings?.pollMinutes ?? 15);
+    showBadge.checked = settings?.showBadge !== false;
+    if (!settings?.baseUrl || !settings?.apiKey) {
+      setStatus('Подключение ещё не настроено.', 'checking');
+      return;
+    }
+    const run = ++statusRun;
+    try {
+      const granted = await chrome.permissions.contains({ origins: [pattern(settings.baseUrl)] });
+      if (!granted) {
+        if (run === statusRun) setStatus('Настройки сохранены, но доступ к адресу нужно подтвердить повторно.', 'warning');
+        return;
+      }
+      if (run === statusRun) setStatus('Проверяю сохранённое подключение…', 'checking');
+      await checkConnection(settings);
+      if (run === statusRun) setStatus(`✓ Подключение работает · проверено ${checkedNow()}`, 'ok');
+    } catch (error) {
+      if (run === statusRun) setStatus(`Настройки сохранены, но проверка не прошла: ${error instanceof Error ? error.message : 'Redmine недоступен.'}`, 'error');
+    }
   });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    statusRun += 1;
     save.disabled = true;
     setStatus('Запрашиваю доступ к Redmine…');
     try {
@@ -36,6 +76,7 @@
         baseUrl: normalized(baseUrl.value),
         apiKey: apiKey.value.trim(),
         pollMinutes: Number(pollMinutes.value) || 0,
+        showBadge: showBadge.checked,
       };
       const originPattern = pattern(next.baseUrl);
       let granted = await chrome.permissions.contains({ origins: [originPattern] });
@@ -46,21 +87,7 @@
       if (!granted) throw new Error('Доступ к адресу Redmine не выдан.');
 
       setStatus('Проверяю адрес и API key…');
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      let response;
-      try {
-        response = await fetch(`${next.baseUrl}/users/current.json`, {
-          headers: { 'X-Redmine-API-Key': next.apiKey },
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (error?.name === 'AbortError') throw new Error('Redmine не ответил за 15 секунд. Проверьте VPN и адрес.');
-        throw error;
-      } finally {
-        clearTimeout(timeout);
-      }
-      if (!response.ok) throw new Error(`Redmine отклонил подключение (${response.status}).`);
+      await checkConnection(next);
 
       setStatus('Сохраняю настройки…');
       const serverChanged = previousBaseUrl && normalized(previousBaseUrl) !== next.baseUrl;
@@ -73,7 +100,7 @@
       // Первичная лента может загружать журналы десятков задач. Она строится в фоне
       // и не должна удерживать popup в состоянии «Сохраняю».
       void chrome.runtime.sendMessage({ type: 'settings.saved' }).catch(() => {});
-      setStatus('Готово. События загружаются в фоне; обновите страницу Redmine.', 'ok');
+      setStatus(`✓ Подключение работает · проверено ${checkedNow()}`, 'ok');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Не удалось сохранить настройки.', 'error');
     } finally {

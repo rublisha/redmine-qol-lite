@@ -267,6 +267,11 @@
   }
   function unreadCount(feed) { return (feed?.events || []).filter((event) => !feed.readKeys?.[event.key]).length; }
   async function updateBadge(feed) {
+    const { showBadge = true } = await getSettings();
+    if (!showBadge) {
+      await chrome.action.setBadgeText({ text: '' });
+      return;
+    }
     const count = unreadCount(feed);
     await chrome.action.setBadgeBackgroundColor({ color: '#326b9b' });
     await chrome.action.setBadgeText({ text: count ? (count > 99 ? '99+' : String(count)) : '' });
@@ -297,7 +302,11 @@
   chrome.permissions.onAdded.addListener(() => void syncContentScripts());
   chrome.permissions.onRemoved.addListener(() => void syncContentScripts());
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.settings) { void syncContentScripts(); void syncAlarm(); }
+    if (area === 'local' && changes.settings) {
+      void syncContentScripts();
+      void syncAlarm();
+      void chrome.storage.local.get(FEED_KEY).then((data) => updateBadge(data[FEED_KEY]));
+    }
   });
   chrome.runtime.onInstalled.addListener(() => { void syncContentScripts(); void syncAlarm(); void refreshEvents(); });
   chrome.runtime.onStartup.addListener(() => { void syncContentScripts(); void syncAlarm(); void refreshEvents(); });
