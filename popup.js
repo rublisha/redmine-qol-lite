@@ -5,6 +5,7 @@
   const baseUrl = document.getElementById('base-url');
   const apiKey = document.getElementById('api-key');
   const pollMinutes = document.getElementById('poll-minutes');
+  const eventButtonPlacement = document.getElementById('event-button-placement');
   const showBadge = document.getElementById('show-badge');
   const save = document.getElementById('save');
   const status = document.getElementById('status');
@@ -46,6 +47,9 @@
     baseUrl.value = previousBaseUrl;
     apiKey.value = settings?.apiKey || '';
     pollMinutes.value = String(settings?.pollMinutes ?? 15);
+    eventButtonPlacement.value = ['sidebar', 'floating', 'both'].includes(settings?.eventButtonPlacement)
+      ? settings.eventButtonPlacement
+      : 'sidebar';
     showBadge.checked = settings?.showBadge !== false;
     if (!settings?.baseUrl || !settings?.apiKey) {
       setStatus('Подключение ещё не настроено.', 'checking');
@@ -76,6 +80,7 @@
         baseUrl: normalized(baseUrl.value),
         apiKey: apiKey.value.trim(),
         pollMinutes: Number(pollMinutes.value) || 0,
+        eventButtonPlacement: eventButtonPlacement.value,
         showBadge: showBadge.checked,
       };
       const originPattern = pattern(next.baseUrl);

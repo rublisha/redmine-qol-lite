@@ -4,7 +4,8 @@
   const FEED_KEY = 'eventFeed';
   const STYLE_ID = 'rsq-events-style';
   let feed = { events: [], readKeys: {}, checkedAt: '' };
-  let button = null;
+  let buttons = [];
+  let anchorButton = null;
   let popover = null;
   let list = null;
   let unreadOnly = false;
@@ -25,6 +26,7 @@
       .rsq-events-count { display:none; min-width:16px; margin-left:5px; padding:0 4px; border-radius:8px; background:#c54638; color:#fff; font-size:10px; line-height:16px; text-align:center; }
       .rsq-events-button.has-unread .rsq-events-count { display:inline-block; }
       .rsq-events-fallback { position:fixed!important; right:16px; bottom:16px; z-index:10000; color:#fff!important; background:#326b9b!important; border-color:#28597f!important; box-shadow:0 2px 9px rgba(0,0,0,.22); }
+      .rsq-events-fallback:hover { color:#fff!important; background:#28597f!important; border-color:#204966!important; }
       .rsq-events-popover { position:fixed; z-index:10020; box-sizing:border-box; width:430px; max-width:calc(100vw - 20px); max-height:min(560px,calc(100vh - 20px)); display:grid; grid-template-rows:auto auto minmax(90px,1fr) auto; overflow:hidden; border:1px solid #b9c5cf; border-radius:5px; background:#fff; box-shadow:0 7px 24px rgba(20,40,60,.24); color:#26313d; font:12px/1.4 Arial,sans-serif; }
       .rsq-events-head { display:flex; align-items:center; gap:8px; padding:10px 11px; border-bottom:1px solid #d5dde4; background:#f3f6f8; }
       .rsq-events-head strong { font-size:14px; }
@@ -70,29 +72,54 @@
     return value === 'описание изменена' ? 'описание изменено' : value;
   }
   function updateButton() {
-    if (!button) return;
     const count = unreadEvents().length;
-    button.classList.toggle('has-unread', count > 0);
-    button.querySelector('.rsq-events-count').textContent = count > 99 ? '99+' : String(count);
-    button.setAttribute('aria-label', count ? `События: ${count} непрочитанных` : 'События');
+    for (const button of buttons) {
+      button.classList.toggle('has-unread', count > 0);
+      button.querySelector('.rsq-events-count').textContent = count > 99 ? '99+' : String(count);
+      button.setAttribute('aria-label', count ? `События: ${count} непрочитанных` : 'События');
+    }
   }
 
-  function createButton() {
-    button = document.createElement('button'); button.type = 'button'; button.className = 'rsq-events-button';
+  function createButton(className = '') {
+    const button = document.createElement('button'); button.type = 'button'; button.className = `rsq-events-button${className ? ` ${className}` : ''}`;
     const title = document.createElement('span'); title.textContent = 'События';
     const count = document.createElement('span'); count.className = 'rsq-events-count';
-    button.append(title, count); button.addEventListener('click', (event) => { event.stopPropagation(); toggle(); });
+    button.append(title, count);
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      anchorButton = button;
+      toggle();
+    });
+    buttons.push(button);
+    return button;
+  }
+
+  function taskSection() {
     const sidebar = document.querySelector('#sidebar');
     const taskHeading = sidebar ? [...sidebar.querySelectorAll('h2,h3,h4')].find((node) => node.textContent.trim().toLocaleLowerCase('ru') === 'задачи') : null;
-    if (sidebar && taskHeading) {
-      const host = document.createElement('div'); host.className = 'rsq-events-sidebar'; host.appendChild(button);
-      let nextSection = taskHeading.nextElementSibling;
-      while (nextSection && !/^H[2-4]$/.test(nextSection.tagName)) nextSection = nextSection.nextElementSibling;
-      taskHeading.parentElement.insertBefore(host, nextSection);
-    } else {
-      button.classList.add('rsq-events-fallback'); document.body.appendChild(button);
+    if (!taskHeading) return null;
+    let nextSection = taskHeading.nextElementSibling;
+    while (nextSection && !/^H[2-4]$/.test(nextSection.tagName)) nextSection = nextSection.nextElementSibling;
+    return { heading: taskHeading, nextSection };
+  }
+
+  function mountButtons(placement = 'sidebar') {
+    document.querySelectorAll('.rsq-events-sidebar, .rsq-events-fallback').forEach((node) => node.remove());
+    buttons = [];
+    anchorButton = null;
+    const mode = ['sidebar', 'floating', 'both'].includes(placement) ? placement : 'sidebar';
+    const section = taskSection();
+    if (section && mode !== 'floating') {
+      const host = document.createElement('div'); host.className = 'rsq-events-sidebar';
+      host.appendChild(createButton());
+      section.heading.parentElement.insertBefore(host, section.nextSection);
     }
+    if (mode === 'floating' || mode === 'both' || !section) {
+      document.body.appendChild(createButton('rsq-events-fallback'));
+    }
+    anchorButton = buttons[0] || null;
     updateButton();
+    if (open) place();
   }
 
   function createPopover() {
@@ -125,7 +152,9 @@
   }
 
   function place() {
+    const button = anchorButton?.isConnected ? anchorButton : buttons.find((node) => node.isConnected);
     if (!button || !popover) return;
+    anchorButton = button;
     const rect = button.getBoundingClientRect();
     popover.style.display = 'grid'; popover.style.visibility = 'hidden';
     const width = popover.offsetWidth; const height = popover.offsetHeight;
@@ -200,16 +229,25 @@
   }
   function toggle() { if (open) hide(); else void show(); }
 
-  ensureStyles(); createButton();
+  ensureStyles();
   globalThis.RedmineSmallQol.getSettings().then((settings) => {
     redmineBaseUrl = globalThis.RedmineSmallQol.normalizeBaseUrl(settings.baseUrl) || location.origin;
+    mountButtons(settings.eventButtonPlacement);
     if (list) render();
-  });
+  }).catch(() => mountButtons());
   chrome.storage.local.get(FEED_KEY).then((data) => { feed = data[FEED_KEY] || feed; render(); });
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[FEED_KEY]) { feed = changes[FEED_KEY].newValue || feed; render(); }
+    if (area !== 'local') return;
+    if (changes[FEED_KEY]) { feed = changes[FEED_KEY].newValue || feed; render(); }
+    if (changes.settings) {
+      const settings = changes.settings.newValue || {};
+      redmineBaseUrl = globalThis.RedmineSmallQol.normalizeBaseUrl(settings.baseUrl) || location.origin;
+      mountButtons(settings.eventButtonPlacement);
+    }
   });
-  document.addEventListener('click', (event) => { if (open && !popover?.contains(event.target) && !button?.contains(event.target)) hide(); });
+  document.addEventListener('click', (event) => {
+    if (open && !popover?.contains(event.target) && !buttons.some((button) => button.contains(event.target))) hide();
+  });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hide(); });
   addEventListener('resize', () => { if (open) place(); }, { passive: true });
   addEventListener('scroll', hide, { passive: true });

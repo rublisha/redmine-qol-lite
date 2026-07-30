@@ -5,7 +5,7 @@
   root.normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
   root.getSettings = async () => {
     const { settings } = await chrome.storage.local.get('settings');
-    return settings || { baseUrl: '', apiKey: '', pollMinutes: 15 };
+    return { baseUrl: '', apiKey: '', pollMinutes: 15, eventButtonPlacement: 'sidebar', ...(settings || {}) };
   };
   root.fetchJson = async (path, init = {}) => {
     const settings = await root.getSettings();
