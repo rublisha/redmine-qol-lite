@@ -11,7 +11,10 @@ $runtimeFiles = @(
   'content-preview.js',
   'content-events.js',
   'content-history.js',
+  'content-new-comments.js',
   'content-favorites.js',
+  'content-drafts.js',
+  'content-quote.js',
   'popup.html',
   'popup.css',
   'popup.js'
