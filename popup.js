@@ -1,6 +1,7 @@
 (() => {
   'use strict';
 
+  const DRAFT_KEY = 'settingsDraft';
   const form = document.getElementById('settings-form');
   const baseUrl = document.getElementById('base-url');
   const apiKey = document.getElementById('api-key');
@@ -41,16 +42,44 @@
   function checkedNow() {
     return new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
   }
+  function saveInputDraft() {
+    void chrome.storage.local.set({
+      [DRAFT_KEY]: {
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+      },
+    }).catch(() => {});
+  }
 
-  chrome.storage.local.get('settings').then(async ({ settings }) => {
+  baseUrl.addEventListener('input', saveInputDraft);
+  apiKey.addEventListener('input', saveInputDraft);
+
+  chrome.storage.local.get(['settings', DRAFT_KEY]).then(async ({ settings, [DRAFT_KEY]: storedDraft }) => {
     previousBaseUrl = settings?.baseUrl || '';
-    baseUrl.value = previousBaseUrl;
-    apiKey.value = settings?.apiKey || '';
+    const savedApiKey = settings?.apiKey || '';
+    const draft = storedDraft && typeof storedDraft === 'object' ? storedDraft : null;
+    const hasDraft = Boolean(draft
+      && (Object.prototype.hasOwnProperty.call(draft, 'baseUrl')
+        || Object.prototype.hasOwnProperty.call(draft, 'apiKey')));
+    const draftBaseUrl = hasDraft && Object.prototype.hasOwnProperty.call(draft, 'baseUrl')
+      ? String(draft.baseUrl ?? '')
+      : previousBaseUrl;
+    const draftApiKey = hasDraft && Object.prototype.hasOwnProperty.call(draft, 'apiKey')
+      ? String(draft.apiKey ?? '')
+      : savedApiKey;
+    const draftDiffers = hasDraft && (draftBaseUrl !== previousBaseUrl || draftApiKey !== savedApiKey);
+    baseUrl.value = draftBaseUrl;
+    apiKey.value = draftApiKey;
     pollMinutes.value = String(settings?.pollMinutes ?? 15);
     eventButtonPlacement.value = ['sidebar', 'floating', 'both'].includes(settings?.eventButtonPlacement)
       ? settings.eventButtonPlacement
       : 'sidebar';
     showBadge.checked = settings?.showBadge !== false;
+    if (hasDraft && !draftDiffers) void chrome.storage.local.remove(DRAFT_KEY);
+    if (draftDiffers) {
+      setStatus('Восстановлены несохранённые поля подключения.', 'checking');
+      return;
+    }
     if (!settings?.baseUrl || !settings?.apiKey) {
       setStatus('Подключение ещё не настроено.', 'checking');
       return;
@@ -97,11 +126,14 @@
       setStatus('Сохраняю настройки…');
       const serverChanged = previousBaseUrl && normalized(previousBaseUrl) !== next.baseUrl;
       if (serverChanged) await chrome.storage.local.remove('eventFeed');
-      await chrome.storage.local.set({ settings: next });
+      await chrome.storage.local.set({ settings: next, [DRAFT_KEY]: null });
+      await chrome.storage.local.remove(DRAFT_KEY);
       if (previousBaseUrl && pattern(previousBaseUrl) !== originPattern) {
         await chrome.permissions.remove({ origins: [pattern(previousBaseUrl)] });
       }
       previousBaseUrl = next.baseUrl;
+      baseUrl.value = next.baseUrl;
+      apiKey.value = next.apiKey;
       // Первичная лента может загружать журналы десятков задач. Она строится в фоне
       // и не должна удерживать popup в состоянии «Сохраняю».
       void chrome.runtime.sendMessage({ type: 'settings.saved' }).catch(() => {});
