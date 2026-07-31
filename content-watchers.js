@@ -4,6 +4,8 @@
   const qol = globalThis.RedmineSmallQol;
   const GROUPS_KEY = 'watcherGroups';
   const LAST_KEY = 'watcherGroupsLast';
+  const GROUPS_FILE_FORMAT = 'redmine-qol-watcher-groups';
+  const GROUPS_FILE_VERSION = 1;
   const STYLE_ID = 'rsq-watchers-style';
   let groups = {};
   let lastGroup = '';
@@ -26,21 +28,40 @@
       .rsq-watcher-filter button.clear { min-height:auto; padding:3px 2px; border-color:transparent; background:transparent; color:#8a5555; text-decoration:underline; text-underline-offset:2px; }
       .rsq-watcher-filter button.clear:hover { color:#a33e2f; }
       .rsq-watcher-filter .count { margin-left:auto; color:#6c7b87; }
-      .rsq-watcher-panel { box-sizing:border-box; display:grid; align-content:start; gap:9px; max-height:100%; overflow:auto; padding:12px; border:1px solid #b8c9db; border-radius:4px; background:#f3f7fb; color:#33485c; }
-      .rsq-watcher-panel h3 { margin:0; font-size:14px; }
-      .rsq-group-list { display:grid; gap:4px; max-height:190px; overflow:auto; padding-right:2px; }
-      .rsq-watcher-panel .rsq-group-option { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-height:31px; padding:4px 8px; background:#fff; text-align:left; }
+      .rsq-watcher-panel { box-sizing:border-box; display:grid; align-self:start; align-content:start; gap:8px; max-height:100%; overflow:auto; padding:11px; border:1px solid #c2cfdb; border-radius:5px; background:#f7f9fb; color:#33485c; box-shadow:0 1px 2px rgba(40,65,85,.08); }
+      .rsq-watcher-panel h3 { margin:0 0 1px; color:#33485c; font-size:14px; }
+      .rsq-group-list { display:grid; gap:4px; max-height:205px; overflow:auto; padding-right:2px; }
+      .rsq-watcher-panel .rsq-group-option { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-height:30px; padding:4px 8px; border-color:#c8d3dc; border-radius:4px; background:#fff; text-align:left; }
       .rsq-watcher-panel .rsq-group-option:hover { border-color:#829fbb; background:#f8fbfe; }
-      .rsq-watcher-panel .rsq-group-option.active { border-color:#4f86b8; background:#dfeefa; color:#315d84; font-weight:bold; }
-      .rsq-group-option .group-count { flex:none; min-width:20px; padding:0 5px; border-radius:8px; background:#dce5ed; color:#536779; font-size:10px; line-height:16px; text-align:center; }
-      .rsq-group-option.active .group-count { background:#fff; color:#315d84; }
+      .rsq-watcher-panel .rsq-group-option:focus { outline:none; }
+      .rsq-watcher-panel .rsq-group-option:focus-visible { outline:2px solid #8ab5d8; outline-offset:1px; }
+      .rsq-watcher-panel .rsq-group-option.active { border-color:#9bb7cd; background:#edf5fb; color:#315d84; font-weight:600; box-shadow:none; }
+      .rsq-group-option .group-count { flex:none; min-width:18px; padding:0; background:transparent; color:#82909c; font-size:10px; font-variant-numeric:tabular-nums; line-height:16px; text-align:right; }
+      .rsq-group-option.active .group-count { background:transparent; color:#60798d; font-weight:normal; }
       .rsq-group-empty { padding:8px; border:1px solid #d5dee7; background:#fff; color:#738291; font-size:11px; text-align:center; }
-      .rsq-watcher-members { max-height:150px; overflow:auto; margin:0; padding:7px 7px 7px 24px; border:1px solid #d5dee7; background:#fff; font-size:11px; }
-      .rsq-watcher-actions { display:grid; gap:6px; }
-      .rsq-watcher-actions .primary { border-color:#3f78aa; background:#4f86b8; color:#fff; }
+      .rsq-watcher-members { max-height:130px; overflow:auto; margin:0; padding:7px 7px 7px 24px; border:1px solid #d5dee7; border-radius:3px; background:#fff; font-size:11px; line-height:1.4; }
+      .rsq-watcher-actions { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
+      .rsq-watcher-actions .primary { grid-column:1/-1; border-color:#3f78aa; background:#4f86b8; color:#fff; }
+      .rsq-watcher-actions .danger { grid-column:1/-1; min-height:25px; border-color:transparent; background:transparent; color:#8a5555; font-weight:normal; }
+      .rsq-watcher-actions .danger:hover { background:#fff2ef; color:#a33e2f; }
+      .rsq-watcher-actions .cancel { grid-column:1/-1; background:#fff; }
+      .rsq-watcher-panel.editing .rsq-watcher-actions [data-action="save"] { grid-column:1/-1; }
       .rsq-watcher-actions button[hidden] { display:none; }
-      .rsq-watcher-status { min-height:16px; color:#536577; font-size:11px; }
+      .rsq-watcher-status { color:#536577; font-size:11px; }
+      .rsq-watcher-status:empty { display:none; }
       .rsq-watcher-status.error { color:#a33e2f; }
+      .rsq-group-transfer { padding-top:7px; border-top:1px solid #d5dee7; color:#687783; font-size:11px; }
+      .rsq-group-transfer summary { cursor:pointer; user-select:none; }
+      .rsq-group-transfer[open] summary { margin-bottom:7px; color:#50606d; }
+      .rsq-group-transfer-body { padding-left:14px; }
+      .rsq-group-transfer-body p { margin:0 0 7px; }
+      .rsq-group-transfer-actions { display:flex; gap:6px; }
+      .rsq-watcher-panel .rsq-group-transfer-actions button { min-height:25px; padding:2px 7px; background:#fff; font-size:11px; }
+      .rsq-group-transfer input[type=file] { display:none; }
+      .rsq-group-transfer-status { margin-top:6px; color:#536577; }
+      .rsq-group-transfer-status:empty { display:none; }
+      .rsq-group-transfer-status.error { color:#a33e2f; }
+      .rsq-group-transfer-status.ok { color:#1c6b41; }
       .rsq-dialog-wide { position:fixed!important; top:50%!important; left:50%!important; width:min(920px,calc(100vw - 20px))!important; max-width:calc(100vw - 20px)!important; max-height:calc(100vh - 16px)!important; margin:0!important; transform:translate(-50%,-50%)!important; }
       .rsq-dialog-wide .ui-dialog-content, .rsq-dialog-wide #ajax-modal { box-sizing:border-box; height:auto!important; max-height:calc(100vh - 86px)!important; overflow:auto!important; }
       .rsq-issue-groups { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-top:7px; }
@@ -104,9 +125,12 @@
 
   function setEditingMode(panel, name = '') {
     panel.dataset.editingGroup = name;
+    panel.classList.toggle('editing', Boolean(name));
+    const edit = panel.querySelector('[data-action="edit"]');
     const save = panel.querySelector('[data-action="save"]');
     const cancel = panel.querySelector('[data-action="cancel-edit"]');
-    save.textContent = name ? 'Сохранить изменения…' : 'Сохранить отмеченных…';
+    edit.hidden = Boolean(name);
+    save.textContent = name ? 'Сохранить изменения…' : 'Новая группа…';
     cancel.hidden = !name;
   }
 
@@ -159,6 +183,105 @@
     node.textContent = text; node.classList.toggle('error', error);
   }
 
+  function setTransferStatus(panel, text, tone = '') {
+    const node = panel.querySelector('.rsq-group-transfer-status');
+    node.textContent = text; node.className = `rsq-group-transfer-status${tone ? ` ${tone}` : ''}`;
+  }
+
+  function normalizedGroups(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('В файле нет корректного списка групп.');
+    }
+    const result = {};
+    for (const [rawName, rawMembers] of Object.entries(value)) {
+      const name = rawName.trim();
+      if (!name || !Array.isArray(rawMembers)) throw new Error('Одна из групп имеет неверный формат.');
+      const members = new Map();
+      for (const rawMember of rawMembers) {
+        if (!rawMember || typeof rawMember !== 'object' || Array.isArray(rawMember)) {
+          throw new Error(`В группе «${name}» есть некорректный участник.`);
+        }
+        const id = String(rawMember.id ?? '').trim();
+        if (!id) throw new Error(`В группе «${name}» есть участник без ID.`);
+        members.set(id, {
+          id,
+          name: String(rawMember.name ?? '').trim().replace(/\s+/g, ' '),
+        });
+      }
+      Object.defineProperty(result, name, {
+        value: [...members.values()], enumerable: true, configurable: true, writable: true,
+      });
+    }
+    return result;
+  }
+
+  function mergedGroups(current, imported) {
+    const result = {};
+    for (const [name, members] of [...Object.entries(current), ...Object.entries(imported)]) {
+      Object.defineProperty(result, name, { value: members, enumerable: true, configurable: true, writable: true });
+    }
+    return result;
+  }
+
+  function groupWord(count) {
+    const mod100 = count % 100;
+    const mod10 = count % 10;
+    if (mod100 >= 11 && mod100 <= 14) return 'групп';
+    if (mod10 === 1) return 'группа';
+    if (mod10 >= 2 && mod10 <= 4) return 'группы';
+    return 'групп';
+  }
+
+  function downloadGroups(panel) {
+    const exported = normalizedGroups(groups);
+    const count = Object.keys(exported).length;
+    if (!count) {
+      setTransferStatus(panel, 'Групп для экспорта пока нет.');
+      return;
+    }
+    const contents = JSON.stringify({
+      format: GROUPS_FILE_FORMAT,
+      version: GROUPS_FILE_VERSION,
+      exportedAt: new Date().toISOString(),
+      groups: exported,
+    }, null, 2);
+    const blobUrl = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `redmine-qol-groups-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    setTransferStatus(panel, `Экспортировано: ${count} ${groupWord(count)}.`, 'ok');
+  }
+
+  async function importGroupsFromFile(panel, root, file) {
+    if (file.size > 1024 * 1024) throw new Error('Файл слишком большой для списка групп.');
+    const payload = JSON.parse(await file.text());
+    if (payload?.format !== GROUPS_FILE_FORMAT || payload?.version !== GROUPS_FILE_VERSION) {
+      throw new Error('Это не файл групп Redmine QOL Lite или его версия не поддерживается.');
+    }
+    const imported = normalizedGroups(payload.groups);
+    const importedNames = Object.keys(imported);
+    if (!importedNames.length) throw new Error('В выбранном файле нет групп.');
+
+    const current = normalizedGroups(groups);
+    const conflicts = importedNames.filter((name) => Object.prototype.hasOwnProperty.call(current, name));
+    if (conflicts.length) {
+      const shown = conflicts.slice(0, 3).map((name) => `«${name}»`).join(', ');
+      const more = conflicts.length > 3 ? ` и ещё ${conflicts.length - 3}` : '';
+      if (!confirm(`Уже существуют: ${shown}${more}. Заменить их данными из файла?`)) {
+        setTransferStatus(panel, 'Импорт отменён.');
+        return;
+      }
+    }
+
+    groups = mergedGroups(current, imported);
+    await persist();
+    fillGroupUi(panel, lastGroup);
+    applyFilter(root);
+    setTransferStatus(panel, `Импортировано: ${importedNames.length} ${groupWord(importedNames.length)}.`, 'ok');
+  }
+
   function createPanel(root, state) {
     const panel = document.createElement('section');
     panel.className = 'rsq-watcher-panel';
@@ -168,13 +291,41 @@
       <ol class="rsq-watcher-members"></ol>
       <div class="rsq-watcher-actions">
         <button type="button" class="primary" data-action="apply">Отметить всю группу</button>
-        <button type="button" data-action="edit">Редактировать группу…</button>
-        <button type="button" data-action="save">Сохранить отмеченных…</button>
-        <button type="button" data-action="cancel-edit" hidden>Отменить редактирование</button>
-        <button type="button" data-action="delete">Удалить группу</button>
+        <button type="button" data-action="edit">Изменить…</button>
+        <button type="button" data-action="save">Новая группа…</button>
+        <button type="button" class="cancel" data-action="cancel-edit" hidden>Отменить редактирование</button>
+        <button type="button" class="danger" data-action="delete">Удалить выбранную группу</button>
       </div>
-      <div class="rsq-watcher-status" aria-live="polite"></div>`;
+      <div class="rsq-watcher-status" aria-live="polite"></div>
+      <details class="rsq-group-transfer">
+        <summary>Импорт и экспорт</summary>
+        <div class="rsq-group-transfer-body">
+          <p>Только названия групп и их участники.</p>
+          <div class="rsq-group-transfer-actions">
+            <button type="button" data-action="export">Экспорт</button>
+            <button type="button" data-action="import">Импорт</button>
+            <input type="file" accept=".json,application/json" data-import-file>
+          </div>
+          <div class="rsq-group-transfer-status" aria-live="polite"></div>
+        </div>
+      </details>`;
     fillGroupUi(panel);
+    const importFile = panel.querySelector('[data-import-file]');
+    importFile.addEventListener('change', async () => {
+      const [file] = importFile.files || [];
+      if (!file) return;
+      setTransferStatus(panel, '');
+      try {
+        await importGroupsFromFile(panel, root, file);
+      } catch (error) {
+        const message = error instanceof SyntaxError
+          ? 'Не удалось прочитать JSON-файл.'
+          : (error instanceof Error ? error.message : 'Не удалось импортировать группы.');
+        setTransferStatus(panel, message, 'error');
+      } finally {
+        importFile.value = '';
+      }
+    });
     panel.addEventListener('click', async (event) => {
       const groupButton = event.target.closest('button[data-group-name]');
       if (groupButton) {
@@ -188,6 +339,17 @@
       event.preventDefault(); event.stopPropagation();
       const boxes = checkboxes(root.querySelector('.rsq-watcher-users'));
       const action = button.dataset.action;
+      if (action === 'export') {
+        setTransferStatus(panel, '');
+        try { downloadGroups(panel); }
+        catch (error) { setTransferStatus(panel, error instanceof Error ? error.message : 'Не удалось экспортировать группы.', 'error'); }
+        return;
+      }
+      if (action === 'import') {
+        setTransferStatus(panel, '');
+        importFile.click();
+        return;
+      }
       if (action === 'edit') {
         const name = selectedName(panel);
         if (!name) return;
