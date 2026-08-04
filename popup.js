@@ -23,6 +23,13 @@
     status.textContent = text;
     status.className = tone;
   }
+  function contentScriptsError(result) {
+    const message = String(result?.error || '');
+    if (/cannot access contents of the page|manifest must request permission|missing host permission/i.test(message)) {
+      return 'API доступен, но Chrome запретил функции на странице. На вкладке Redmine откройте меню расширения, выберите «Может читать и изменять данные сайта» → «На этом сайте» и обновите страницу.';
+    }
+    return `API доступен, но функции на странице не запустились: ${message || 'обновите вкладку Redmine.'}`;
+  }
   async function checkConnection(settings) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -93,7 +100,11 @@
       }
       if (run === statusRun) setStatus('Проверяю сохранённое подключение…', 'checking');
       await checkConnection(settings);
-      if (run === statusRun) setStatus(`✓ Подключение работает · проверено ${checkedNow()}`, 'ok');
+      const contentScripts = await chrome.runtime.sendMessage({ type: 'content.ensure' });
+      if (run === statusRun) {
+        if (contentScripts?.ok) setStatus(`✓ Подключение и функции работают · проверено ${checkedNow()}`, 'ok');
+        else setStatus(contentScriptsError(contentScripts), 'warning');
+      }
     } catch (error) {
       if (run === statusRun) setStatus(`Настройки сохранены, но проверка не прошла: ${error instanceof Error ? error.message : 'Redmine недоступен.'}`, 'error');
     }
@@ -136,8 +147,9 @@
       apiKey.value = next.apiKey;
       // Первичная лента может загружать журналы десятков задач. Она строится в фоне
       // и не должна удерживать popup в состоянии «Сохраняю».
-      void chrome.runtime.sendMessage({ type: 'settings.saved' }).catch(() => {});
-      setStatus(`✓ Подключение работает · проверено ${checkedNow()}`, 'ok');
+      const contentScripts = await chrome.runtime.sendMessage({ type: 'settings.saved' });
+      if (contentScripts?.ok) setStatus(`✓ Подключение и функции работают · проверено ${checkedNow()}`, 'ok');
+      else setStatus(contentScriptsError(contentScripts), 'warning');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Не удалось сохранить настройки.', 'error');
     } finally {

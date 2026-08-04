@@ -2,6 +2,8 @@
   'use strict';
 
   const qol = globalThis.RedmineSmallQol;
+  if (!qol || qol.watchersActive) return;
+  qol.watchersActive = true;
   const GROUPS_KEY = 'watcherGroups';
   const LAST_KEY = 'watcherGroupsLast';
   const GROUPS_FILE_FORMAT = 'redmine-qol-watcher-groups';

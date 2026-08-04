@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  const qol = globalThis.RedmineSmallQol;
+  if (!qol || qol.historyActive) return;
+  qol.historyActive = true;
   const FILTER_KEY = 'journalFilter';
   const STYLE_ID = 'rsq-history-style';
 

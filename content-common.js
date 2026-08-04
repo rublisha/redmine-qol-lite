@@ -1,6 +1,7 @@
 (() => {
   'use strict';
   const root = globalThis.RedmineSmallQol = globalThis.RedmineSmallQol || {};
+  root.contentScriptsLoaded = true;
 
   root.normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
   root.getSettings = async () => {

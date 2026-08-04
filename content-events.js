@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  const qol = globalThis.RedmineSmallQol;
+  if (!qol || qol.eventsActive) return;
+  qol.eventsActive = true;
   const FEED_KEY = 'eventFeed';
   const STYLE_ID = 'rsq-events-style';
   let feed = { events: [], readKeys: {}, checkedAt: '' };

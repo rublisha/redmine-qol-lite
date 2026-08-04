@@ -24,6 +24,7 @@
 
   let refreshPromise = null;
   let refreshIsForced = false;
+  let contentScriptSyncPromise = null;
 
   function normalize(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function permissionPattern(value) {
@@ -40,26 +41,97 @@
     catch { return false; }
   }
 
-  async function syncContentScripts() {
+  async function injectContentScripts(tabId) {
+    try {
+      const [probe] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => globalThis.RedmineSmallQol?.contentScriptsLoaded === true,
+      });
+      if (probe?.result) return { ok: true, injected: false };
+      await chrome.scripting.executeScript({ target: { tabId }, files: SCRIPT_FILES });
+      return { ok: true, injected: true };
+    } catch (error) {
+      // The tab may have navigated, closed, or become inaccessible between query and injection.
+      return { ok: false, error: error instanceof Error ? error.message : 'Content scripts could not be injected.' };
+    }
+  }
+
+  async function injectContentScriptsIntoOpenTabs(baseUrl) {
+    if (!baseUrl || !await allowed(baseUrl)) return { ok: false, found: 0, injected: 0 };
+    let tabs;
+    try { tabs = await chrome.tabs.query({ url: permissionPattern(baseUrl) }); }
+    catch (error) {
+      return { ok: false, found: 0, injected: 0, error: error instanceof Error ? error.message : 'Redmine tabs could not be queried.' };
+    }
+    const results = await Promise.all(tabs.filter((tab) => tab.id !== undefined).map((tab) => injectContentScripts(tab.id)));
+    return {
+      ok: results.length === 0 || results.some((result) => result.ok),
+      found: results.length,
+      injected: results.filter((result) => result.injected).length,
+      error: results.find((result) => !result.ok)?.error || '',
+    };
+  }
+
+  async function injectContentScriptsIfConfigured(tabId, url) {
+    const settings = await getSettings();
+    if (!settings.baseUrl || !url || !await allowed(settings.baseUrl)) return;
+    try {
+      if (new URL(url).origin !== new URL(normalize(settings.baseUrl)).origin) return;
+    } catch { return; }
+    await injectContentScripts(tabId);
+  }
+
+  async function doSyncContentScripts() {
     const settings = await getSettings();
     const pattern = settings.baseUrl ? permissionPattern(settings.baseUrl) : '';
     const canRun = pattern && await allowed(settings.baseUrl);
-    const [current] = await chrome.scripting.getRegisteredContentScripts({ ids: [SCRIPT_ID] });
-    if (!canRun) {
-      if (current) await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
-      return;
+    let registrationError = '';
+    let current;
+    try {
+      [current] = await chrome.scripting.getRegisteredContentScripts({ ids: [SCRIPT_ID] });
+    } catch (error) {
+      registrationError = error instanceof Error ? error.message : 'Dynamic content-script registration is unavailable.';
     }
-    const samePattern = current?.matches?.length === 1 && current.matches[0] === pattern;
-    const sameFiles = current?.js?.length === SCRIPT_FILES.length && SCRIPT_FILES.every((file, i) => current.js[i] === file);
-    if (samePattern && sameFiles) return;
-    if (current) await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
-    await chrome.scripting.registerContentScripts([{
-      id: SCRIPT_ID,
-      matches: [pattern],
-      js: SCRIPT_FILES,
-      runAt: 'document_idle',
-      persistAcrossSessions: true,
-    }]);
+    if (!canRun) {
+      if (current) {
+        try { await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] }); }
+        catch { /* The permission is already unavailable, so there is nothing else to do. */ }
+      }
+      return { ok: false, error: 'Redmine access is not configured.' };
+    }
+    if (!registrationError) {
+      try {
+        const samePattern = current?.matches?.length === 1 && current.matches[0] === pattern;
+        const sameFiles = current?.js?.length === SCRIPT_FILES.length && SCRIPT_FILES.every((file, i) => current.js[i] === file);
+        if (!samePattern || !sameFiles) {
+          if (current) await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
+          await chrome.scripting.registerContentScripts([{
+            id: SCRIPT_ID,
+            matches: [pattern],
+            js: SCRIPT_FILES,
+            runAt: 'document_idle',
+            persistAcrossSessions: true,
+          }]);
+        }
+      } catch (error) {
+        registrationError = error instanceof Error ? error.message : 'Dynamic content scripts could not be registered.';
+      }
+    }
+    if (registrationError) console.warn('[Redmine QOL Lite] Dynamic content-script registration failed; using tab injection:', registrationError);
+    const tabs = await injectContentScriptsIntoOpenTabs(settings.baseUrl);
+    return {
+      ok: tabs.ok && (!registrationError || tabs.found > 0),
+      registrationOk: !registrationError,
+      tabs,
+      error: !tabs.ok ? tabs.error : (registrationError && tabs.found === 0 ? registrationError : ''),
+    };
+  }
+
+  function syncContentScripts() {
+    if (!contentScriptSyncPromise) {
+      contentScriptSyncPromise = doSyncContentScripts().finally(() => { contentScriptSyncPromise = null; });
+    }
+    return contentScriptSyncPromise;
   }
 
   async function syncAlarm() {
@@ -372,10 +444,17 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'settings.saved') {
-      Promise.all([syncContentScripts(), syncAlarm()]).then(() => {
-        sendResponse({ ok: true });
+      Promise.all([syncContentScripts(), syncAlarm()]).then(([contentScripts]) => {
+        sendResponse(contentScripts);
         void refreshEvents();
       }).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Ошибка настройки.' }));
+      return true;
+    }
+    if (message?.type === 'content.ensure') {
+      syncContentScripts().then(sendResponse).catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Не удалось запустить функции на странице.',
+      }));
       return true;
     }
     if (message?.type === 'events.refresh') { refreshEvents(message.forceRecent === true).then(sendResponse); return true; }
@@ -383,6 +462,9 @@
     return false;
   });
   chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void refreshEvents(); });
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete') void injectContentScriptsIfConfigured(tabId, tab.url);
+  });
   chrome.permissions.onAdded.addListener(() => void syncContentScripts());
   chrome.permissions.onRemoved.addListener(() => void syncContentScripts());
   chrome.storage.onChanged.addListener((changes, area) => {

@@ -4,3 +4,4 @@
 .DS_Store
 Thumbs.db
 chrome-web-store/package/*.zip
+chrome-web-store/package/redmine-qol-lite-*/

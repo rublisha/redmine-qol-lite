@@ -2,6 +2,8 @@
   'use strict';
 
   const qol = globalThis.RedmineSmallQol;
+  if (!qol || qol.previewActive) return;
+  qol.previewActive = true;
   const STYLE_ID = 'rsq-preview-style';
   const SHOW_DELAY = 350;
   const HIDE_DELAY = 180;

@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  const qol = globalThis.RedmineSmallQol;
+  if (!qol || qol.favoritesActive) return;
+  qol.favoritesActive = true;
   const FAVORITES_KEY = 'favoriteIssues';
   const COLLAPSED_KEY = 'favoriteIssuesCollapsed';
   const STYLE_ID = 'rsq-favorites-style';
