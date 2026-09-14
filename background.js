@@ -5,11 +5,21 @@
   const SCRIPT_FILES = ['content-common.js', 'content-watchers.js', 'content-preview.js', 'content-events.js', 'content-history.js', 'content-new-comments.js', 'content-favorites.js', 'content-drafts.js', 'content-quote.js'];
   const ALARM = 'redmine-events';
   const FEED_KEY = 'eventFeed';
+  const SCOPE_KEY = 'eventFilterScopes';
   const FEED_SCHEMA = 3;
   const MAX_ISSUES = 60;
   const MAX_EVENTS = 150;
   const DETAIL_LIMIT = 10;
+  const DETAIL_LIMIT_FILTERED = 20;
+  const MAX_FILTERS = 6;
+  const MAX_SCOPE_ISSUES = 150;
+  const MAX_SCOPE_REQUESTS = 40;
+  const MAX_SCOPE_DEPTH = 6;
+  const MAX_SCOPE_FEED = 150;
+  const SCOPE_TTL_MS = 30 * 60 * 1000;
   const MAX_KNOWN_WATCHERS = 2000;
+  const MAX_COMMENT_CHARS = 4000;
+  const CHIME_PAUSE_MS = 10000;
 
   const fieldLabels = {
     status_id: 'статус', priority_id: 'приоритет', tracker_id: 'трекер', fixed_version_id: 'версия',
@@ -25,6 +35,7 @@
   let refreshPromise = null;
   let refreshIsForced = false;
   let contentScriptSyncPromise = null;
+  let lastChimeAt = 0;
 
   function normalize(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function permissionPattern(value) {
@@ -159,7 +170,105 @@
     }
   }
 
-  async function getFeedIssues(settings) {
+  function normalizeFilters(settings) {
+    return (Array.isArray(settings?.eventFilters) ? settings.eventFilters : [])
+      .map((filter) => ({
+        id: String(filter?.id || ''),
+        label: String(filter?.label || '').trim(),
+        issueId: Number(filter?.issueId) || 0,
+      }))
+      .filter((filter) => filter.id && filter.issueId > 0)
+      .slice(0, MAX_FILTERS);
+  }
+  // Область вкладки: сама задача, все её подзадачи вглубь и задачи, связанные с любой
+  // из них. Связанные задачи дальше не разворачиваются, иначе обход расползается на
+  // весь проект. Обход ограничен по числу запросов, глубине и размеру области.
+  async function resolveFilterScope(settings, filter) {
+    const scope = new Set([String(filter.issueId)]);
+    const related = new Set();
+    const queue = [{ id: filter.issueId, depth: 0 }];
+    let requests = 0;
+    let failed = 0;
+    while (queue.length && requests < MAX_SCOPE_REQUESTS && scope.size < MAX_SCOPE_ISSUES) {
+      const { id, depth } = queue.shift();
+      requests += 1;
+      let issue;
+      try {
+        ({ issue } = await requestJson(settings, `/issues/${id}.json?include=children,relations`));
+      } catch (error) {
+        failed += 1;
+        console.warn(`[Redmine QOL Lite] Не удалось раскрыть задачу #${id} для вкладки:`, error);
+        continue;
+      }
+      for (const relation of issue?.relations || []) {
+        for (const side of [relation.issue_id, relation.issue_to_id]) {
+          const key = String(side || '');
+          if (key && key !== String(id)) related.add(key);
+        }
+      }
+      if (depth >= MAX_SCOPE_DEPTH) continue;
+      for (const child of issue?.children || []) {
+        const key = String(child.id);
+        if (!key || scope.has(key)) continue;
+        scope.add(key);
+        queue.push({ id: child.id, depth: depth + 1 });
+      }
+    }
+    for (const key of related) {
+      if (scope.size >= MAX_SCOPE_ISSUES) break;
+      scope.add(key);
+    }
+    return {
+      rootId: filter.issueId,
+      label: filter.label,
+      issueIds: [...scope].slice(0, MAX_SCOPE_ISSUES),
+      resolvedAt: new Date().toISOString(),
+      truncated: queue.length > 0 || scope.size >= MAX_SCOPE_ISSUES,
+      failed,
+    };
+  }
+  async function getFilterScopes(settings, force = false) {
+    const filters = normalizeFilters(settings);
+    const { [SCOPE_KEY]: stored } = await chrome.storage.local.get(SCOPE_KEY);
+    const previous = stored && typeof stored === 'object' ? stored : {};
+    const next = {};
+    for (const filter of filters) {
+      const cached = previous[filter.id];
+      const usable = cached
+        && cached.rootId === filter.issueId
+        && Array.isArray(cached.issueIds)
+        && !force
+        && Date.now() - new Date(cached.resolvedAt || 0).getTime() < SCOPE_TTL_MS;
+      next[filter.id] = usable ? { ...cached, label: filter.label } : await resolveFilterScope(settings, filter);
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(next)) await chrome.storage.local.set({ [SCOPE_KEY]: next });
+    return next;
+  }
+  function scopeLabels(scopes) {
+    const labels = new Map();
+    for (const scope of Object.values(scopes)) {
+      const label = scope.label || `#${scope.rootId}`;
+      for (const id of scope.issueIds || []) {
+        const key = String(id);
+        const current = labels.get(key);
+        if (current) { if (!current.includes(label)) current.push(label); }
+        else labels.set(key, [label]);
+      }
+    }
+    return labels;
+  }
+  async function getScopeIssues(settings, scopes) {
+    const ids = [...new Set(Object.values(scopes).flatMap((scope) => (scope.issueIds || []).map(String)))];
+    if (!ids.length) return [];
+    const chunks = [];
+    for (let index = 0; index < ids.length; index += 100) chunks.push(ids.slice(index, index + 100));
+    const parts = await Promise.all(chunks.map((chunk) => queryIssues(settings, 'вкладка', {
+      issue_id: chunk.join(','), limit: '100',
+    })));
+    return parts.flat();
+  }
+
+  async function getFeedIssues(settings, scopes = {}) {
     const parts = await Promise.all([
       queryIssues(settings, 'наблюдатель', { watcher_id: 'me' }),
       queryIssues(settings, 'автор', { author_id: 'me' }),
@@ -171,9 +280,24 @@
       if (current) { if (!current.reasons.includes(reason)) current.reasons.push(reason); }
       else merged.set(issue.id, { issue, reasons: [reason] });
     }
-    return [...merged.values()]
-      .sort((a, b) => String(b.issue.updated_on || '').localeCompare(String(a.issue.updated_on || '')))
-      .slice(0, MAX_ISSUES);
+    const byUpdated = (a, b) => String(b.issue.updated_on || '').localeCompare(String(a.issue.updated_on || ''));
+    const personal = [...merged.values()].sort(byUpdated).slice(0, MAX_ISSUES);
+    const combined = new Map(personal.map((item) => [String(item.issue.id), item]));
+    const labels = scopeLabels(scopes);
+    let added = 0;
+    for (const { issue } of (await getScopeIssues(settings, scopes)).sort(byUpdated)) {
+      const key = String(issue.id);
+      const tabs = labels.get(key) || [];
+      const current = combined.get(key);
+      if (current) {
+        for (const tab of tabs) if (!current.reasons.includes(tab)) current.reasons.push(tab);
+        continue;
+      }
+      if (added >= MAX_SCOPE_FEED) continue;
+      added += 1;
+      combined.set(key, { issue, reasons: tabs.length ? tabs : ['вкладка'] });
+    }
+    return [...combined.values()].sort(byUpdated);
   }
 
   async function mapLimit(items, limit, worker) {
@@ -246,6 +370,29 @@
     if (!from) return `${label}: ${to}`;
     return `${label}: ${from} → ${to}`;
   }
+  // Разложенное изменение для окна событий: подпись поля, прежнее и новое значение
+  // показываются отдельно, поэтому лента читается без разбора готовой строки.
+  function describeField(detail, names) {
+    if (detail.property === 'attachment') {
+      return detail.new_value
+        ? { label: 'вложение', to: String(detail.new_value) }
+        : { label: 'вложение', text: detail.old_value ? 'удалено' : 'изменено', from: String(detail.old_value || '') };
+    }
+    if (detail.property === 'relation') return { label: 'связи', text: 'изменены' };
+    if (detail.property === 'cf') return { label: 'доп. поле', text: 'изменено' };
+    const label = fieldLabels[detail.name] || detail.name || 'поле';
+    if (detail.name === 'description') return { label, text: 'изменено' };
+    if (detail.name === 'subject') return { label, text: 'изменена' };
+    const from = resolveValue(names, detail.name, detail.old_value);
+    const to = resolveValue(names, detail.name, detail.new_value);
+    if (!to) return { label, from, text: 'очищено' };
+    if (!from) return { label, to };
+    return { label, from, to };
+  }
+  function trimComment(value) {
+    const text = String(value || '').trim();
+    return text.length > MAX_COMMENT_CHARS ? `${text.slice(0, MAX_COMMENT_CHARS)}…` : text;
+  }
   function toEvent(issue, reasons, journal, names, noteNumber) {
     return {
       key: `${issue.id}:${journal.id}`,
@@ -259,7 +406,8 @@
       actor: journal.user?.name || 'Неизвестный пользователь',
       at: journal.created_on || issue.updated_on || '',
       changes: (journal.details || []).map((detail) => describeDetail(detail, names)).filter(Boolean),
-      comment: String(journal.notes || '').trim(),
+      fields: (journal.details || []).map((detail) => describeField(detail, names)).filter(Boolean),
+      comment: trimComment(journal.notes),
       reasons,
     };
   }
@@ -277,6 +425,7 @@
       at: isNew ? (issue.created_on || discoveredAt) : discoveredAt,
       summary: isNew ? 'создал задачу' : 'задача появилась в наблюдаемых',
       changes: [],
+      fields: [],
       comment: '',
       reasons,
     };
@@ -287,7 +436,10 @@
     const settings = await getSettings();
     if (!settings.baseUrl || !settings.apiKey || !await allowed(settings.baseUrl)) return { ok: false, error: 'Расширение не настроено.' };
 
-    const feed = await getFeedIssues(settings);
+    // Дерево задач вкладок пересобирается по таймауту, а по кнопке ↻ — сразу.
+    const scopes = await getFilterScopes(settings, forceRecent);
+    const feed = await getFeedIssues(settings, scopes);
+    const detailLimit = Object.keys(scopes).length ? DETAIL_LIMIT_FILTERED : DETAIL_LIMIT;
     const checkedAt = new Date().toISOString();
     const { [FEED_KEY]: stored } = await chrome.storage.local.get(FEED_KEY);
     const previous = stored?.schema === FEED_SCHEMA
@@ -332,8 +484,8 @@
     const knownWatcherIds = new Set(discoveryHistory.map(String));
     const newlyWatched = watched.filter(({ issue }) => !knownWatcherIds.has(String(issue.id)));
     const candidates = forceRecent
-      ? uniqueCandidates(feed, DETAIL_LIMIT)
-      : uniqueCandidates([...newlyWatched, ...changed], DETAIL_LIMIT);
+      ? uniqueCandidates(feed, detailLimit)
+      : uniqueCandidates([...newlyWatched, ...changed], detailLimit);
     const details = await mapLimit(candidates, 4, async ({ issue, reasons }) => {
       try {
         const data = await requestJson(settings, `/issues/${issue.id}.json?include=journals`);
@@ -406,6 +558,7 @@
     };
     await chrome.storage.local.set({ [FEED_KEY]: next });
     await updateBadge(next);
+    if (freshEvents.length) void chimeAboutNewEvents();
     return { ok: true, added: freshEvents.length };
   }
 
@@ -432,6 +585,27 @@
     await chrome.action.setBadgeBackgroundColor({ color: '#326b9b' });
     await chrome.action.setBadgeText({ text: count ? (count > 99 ? '99+' : String(count)) : '' });
   }
+  // Service worker не умеет проигрывать звук сам, поэтому сигнал воспроизводит одна
+  // вкладка Redmine: сначала активная, затем любая другая, где скрипт уже запущен.
+  async function chimeAboutNewEvents() {
+    const settings = await getSettings();
+    if (settings.eventSound === false || !settings.baseUrl || !await allowed(settings.baseUrl)) return;
+    if (Date.now() - lastChimeAt < CHIME_PAUSE_MS) return;
+    let tabs;
+    try { tabs = await chrome.tabs.query({ url: permissionPattern(settings.baseUrl) }); }
+    catch { return; }
+    const ordered = tabs
+      .filter((tab) => tab.id !== undefined)
+      .sort((a, b) => Number(b.active) - Number(a.active) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    for (const tab of ordered) {
+      try {
+        const played = await chrome.tabs.sendMessage(tab.id, { type: 'events.chime' });
+        // Вкладка без жеста пользователя держит звук выключенным — пробуем следующую.
+        if (played?.ok) { lastChimeAt = Date.now(); return; }
+      } catch { /* На этой вкладке content scripts не запущены. */ }
+    }
+  }
+
   async function markRead(keys) {
     const { [FEED_KEY]: feed } = await chrome.storage.local.get(FEED_KEY);
     if (!feed) return;

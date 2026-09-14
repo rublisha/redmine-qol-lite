@@ -13,6 +13,17 @@ input, select, button { width: 100%; min-height: 34px; padding: 6px 8px; border:
 input:focus, select:focus { outline: 2px solid #a9c9e6; border-color: #4f86b8; }
 button { border-color: #3f78aa; background: #4f86b8; color: #fff; cursor: pointer; font-weight: 600; }
 button:disabled { cursor: default; opacity: .6; }
+button.secondary { min-height: 30px; border-color: #c5cfd8; background: #fff; color: #3d5568; font-size: 12px; }
+button.secondary:hover:not(:disabled) { border-color: #9fb1c1; background: #f2f7fb; }
+.filters { display: grid; gap: 7px; }
+.filters-head { color: #50606d; font-size: 11px; font-weight: 600; }
+.filters-list { display: grid; gap: 6px; }
+.filters-empty { color: #8a949d; font-size: 11px; }
+.filter-row { display: grid; grid-template-columns: 74px 1fr 30px; gap: 6px; }
+.filter-row input { min-height: 30px; padding: 4px 7px; font-size: 12px; }
+.filter-remove { min-height: 30px; padding: 0; border-color: #ddc6c1; background: #fff5f2; color: #a33e2f; font-size: 15px; line-height: 1; }
+.filter-remove:hover { border-color: #c9a79f; background: #ffe9e3; }
+.hint { margin: 0; color: #8a949d; font-size: 10.5px; line-height: 1.35; }
 #status { min-height: 18px; margin-top: 10px; padding: 7px 9px; border: 1px solid transparent; border-radius: 4px; color: #536577; font-size: 11px; }
 #status:empty { display: none; }
 #status.checking { border-color: #ced8e1; background: #eef3f7; color: #536577; }

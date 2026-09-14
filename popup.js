@@ -2,16 +2,78 @@
   'use strict';
 
   const DRAFT_KEY = 'settingsDraft';
+  const MAX_FILTERS = 6;
   const form = document.getElementById('settings-form');
   const baseUrl = document.getElementById('base-url');
   const apiKey = document.getElementById('api-key');
   const pollMinutes = document.getElementById('poll-minutes');
   const eventButtonPlacement = document.getElementById('event-button-placement');
   const showBadge = document.getElementById('show-badge');
+  const eventSound = document.getElementById('event-sound');
+  const filtersList = document.getElementById('filters-list');
+  const addFilter = document.getElementById('add-filter');
   const save = document.getElementById('save');
   const status = document.getElementById('status');
   let previousBaseUrl = '';
   let statusRun = 0;
+  let filterRows = [];
+
+  function readFilters(settings) {
+    return (Array.isArray(settings?.eventFilters) ? settings.eventFilters : [])
+      .map((filter) => ({
+        id: String(filter?.id || ''),
+        label: String(filter?.label || ''),
+        issueId: String(Number(filter?.issueId) || ''),
+      }))
+      .filter((filter) => filter.id && filter.issueId)
+      .slice(0, MAX_FILTERS);
+  }
+  function newFilterId() {
+    return `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+  function renderFilters() {
+    filtersList.replaceChildren();
+    if (!filterRows.length) {
+      const empty = document.createElement('div'); empty.className = 'filters-empty';
+      empty.textContent = 'Вкладок нет — окно событий покажет общую ленту.';
+      filtersList.appendChild(empty);
+    }
+    filterRows.forEach((row, index) => {
+      const line = document.createElement('div'); line.className = 'filter-row';
+      const issueId = document.createElement('input');
+      issueId.type = 'text'; issueId.inputMode = 'numeric'; issueId.placeholder = '№'; issueId.value = row.issueId;
+      issueId.setAttribute('aria-label', 'Номер задачи');
+      issueId.addEventListener('input', () => {
+        issueId.value = issueId.value.replace(/\D+/g, '');
+        filterRows[index].issueId = issueId.value;
+      });
+      const label = document.createElement('input');
+      label.type = 'text'; label.placeholder = 'Название вкладки'; label.value = row.label; label.maxLength = 40;
+      label.setAttribute('aria-label', 'Название вкладки');
+      label.addEventListener('input', () => { filterRows[index].label = label.value; });
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'filter-remove'; remove.textContent = '×'; remove.title = 'Удалить вкладку';
+      remove.addEventListener('click', () => { filterRows.splice(index, 1); renderFilters(); });
+      line.append(issueId, label, remove);
+      filtersList.appendChild(line);
+    });
+    addFilter.disabled = filterRows.length >= MAX_FILTERS;
+  }
+  function collectFilters() {
+    const filled = filterRows.filter((row) => row.issueId.trim() || row.label.trim());
+    if (filled.some((row) => !(Number(row.issueId) > 0))) throw new Error('У каждой вкладки должен быть номер задачи.');
+    return filled.map((row) => ({
+      id: row.id || newFilterId(),
+      label: row.label.trim(),
+      issueId: Number(row.issueId),
+    }));
+  }
+
+  addFilter.addEventListener('click', () => {
+    if (filterRows.length >= MAX_FILTERS) return;
+    filterRows.push({ id: newFilterId(), label: '', issueId: '' });
+    renderFilters();
+  });
 
   function normalized(value) { return String(value || '').trim().replace(/\/+$/, ''); }
   function pattern(value) {
@@ -82,6 +144,9 @@
       ? settings.eventButtonPlacement
       : 'sidebar';
     showBadge.checked = settings?.showBadge !== false;
+    eventSound.checked = settings?.eventSound !== false;
+    filterRows = readFilters(settings);
+    renderFilters();
     if (hasDraft && !draftDiffers) void chrome.storage.local.remove(DRAFT_KEY);
     if (draftDiffers) {
       setStatus('Восстановлены несохранённые поля подключения.', 'checking');
@@ -122,6 +187,8 @@
         pollMinutes: Number(pollMinutes.value) || 0,
         eventButtonPlacement: eventButtonPlacement.value,
         showBadge: showBadge.checked,
+        eventSound: eventSound.checked,
+        eventFilters: collectFilters(),
       };
       const originPattern = pattern(next.baseUrl);
       let granted = await chrome.permissions.contains({ origins: [originPattern] });
@@ -145,6 +212,8 @@
       previousBaseUrl = next.baseUrl;
       baseUrl.value = next.baseUrl;
       apiKey.value = next.apiKey;
+      filterRows = readFilters(next);
+      renderFilters();
       // Первичная лента может загружать журналы десятков задач. Она строится в фоне
       // и не должна удерживать popup в состоянии «Сохраняю».
       const contentScripts = await chrome.runtime.sendMessage({ type: 'settings.saved' });
