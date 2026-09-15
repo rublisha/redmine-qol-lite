@@ -6,10 +6,18 @@
   qol.eventsActive = true;
   const FEED_KEY = 'eventFeed';
   const SCOPE_KEY = 'eventFilterScopes';
+  const UI_KEY = 'eventPanelUi';
   const STYLE_ID = 'rsq-events-style';
   const VISIBLE_CHANGES = 6;
   const LONG_COMMENT_CHARS = 260;
   const LONG_COMMENT_LINES = 7;
+  // Лента держит до 150 событий, но карточка с разбором Textile стоит дорого,
+  // поэтому в DOM попадает только то, до чего человек реально долистал.
+  const RENDER_BATCH = 24;
+  const MIN_WIDTH = 360;
+  const MIN_HEIGHT = 240;
+  const DEFAULT_WIDTH = 560;
+  const DEFAULT_HEIGHT = 680;
   let feed = { events: [], readKeys: {}, checkedAt: '' };
   let filters = [];
   let scopes = {};
@@ -26,6 +34,15 @@
   let redmineBaseUrl = location.origin;
   let soundEnabled = true;
   let audioContext = null;
+  let geometry = { left: null, top: null, width: null, height: null };
+  let geometryReady = false;
+  let geometrySaveTimer = 0;
+  let sizeObserver = null;
+  let queue = [];
+  let queueIndex = 0;
+  let sentinel = null;
+  let listDirty = true;
+  let scrollFrame = 0;
 
   function ensureStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -42,9 +59,11 @@
       .rsq-events-fallback { position:fixed!important; right:16px; bottom:16px; z-index:10000; color:#fff!important; background:#326b9b!important; border-color:#28597f!important; box-shadow:0 2px 9px rgba(0,0,0,.22); }
       .rsq-events-fallback:hover { color:#fff!important; background:#28597f!important; border-color:#204966!important; }
 
-      .rsq-events-popover { position:fixed; z-index:10020; box-sizing:border-box; width:560px; max-width:calc(100vw - 20px); max-height:min(680px,calc(100vh - 24px)); display:grid; grid-template-rows:auto auto auto minmax(110px,1fr) auto; overflow:hidden; border:1px solid #b4c1cc; border-radius:7px; background:#fff; box-shadow:0 12px 34px rgba(18,38,58,.26); color:#1f2a35; font:13px/1.5 -apple-system,"Segoe UI",Arial,sans-serif; }
+      .rsq-events-popover { position:fixed; z-index:10020; box-sizing:border-box; width:560px; min-width:min(360px,calc(100vw - 20px)); min-height:min(240px,calc(100vh - 24px)); max-width:calc(100vw - 20px); max-height:calc(100vh - 24px); display:grid; grid-template-rows:auto auto auto minmax(110px,1fr) auto; overflow:hidden; resize:both; border:1px solid #b4c1cc; border-radius:7px; background:#fff; box-shadow:0 12px 34px rgba(18,38,58,.26); color:#1f2a35; font:13px/1.5 -apple-system,"Segoe UI",Arial,sans-serif; opacity:0; transform:translateY(-4px); transition:opacity .11s ease-out, transform .11s ease-out; }
+      .rsq-events-popover.is-open { opacity:1; transform:none; }
+      .rsq-events-popover.is-dragging { user-select:none; transition:none; box-shadow:0 18px 44px rgba(18,38,58,.34); }
       .rsq-events-popover *, .rsq-events-popover *::before, .rsq-events-popover *::after { box-sizing:border-box; }
-      .rsq-events-head { display:flex; align-items:center; gap:8px; padding:11px 12px; border-bottom:1px solid #dae1e7; background:linear-gradient(#f9fbfc,#eef3f7); }
+      .rsq-events-head { display:flex; align-items:center; gap:8px; padding:11px 12px; border-bottom:1px solid #dae1e7; background:linear-gradient(#f9fbfc,#eef3f7); cursor:move; user-select:none; }
       .rsq-events-head strong { font-size:15px; font-weight:700; letter-spacing:.1px; }
       .rsq-events-pill { display:none; padding:1px 8px; border-radius:9px; background:#c54638; color:#fff; font-size:11px; font-weight:600; line-height:17px; white-space:nowrap; }
       .rsq-events-pill.is-on { display:inline-block; }
@@ -125,7 +144,8 @@
       .rsq-event-more:hover { color:#c61a1a; text-decoration:underline; }
 
       .rsq-events-empty { padding:34px 16px; color:#74828d; text-align:center; }
-      .rsq-events-foot { display:flex; align-items:center; gap:10px; padding:7px 12px; border-top:1px solid #dfe5ea; background:#fafcfd; color:#8b97a1; font-size:11px; }
+      .rsq-events-sentinel { padding:9px 12px; color:#8b97a1; font-size:11px; text-align:center; }
+      .rsq-events-foot { display:flex; align-items:center; gap:10px; padding:7px 22px 7px 12px; border-top:1px solid #dfe5ea; background:#fafcfd; color:#8b97a1; font-size:11px; }
       .rsq-events-foot span:last-child { margin-left:auto; }
       @media(max-width:600px){.rsq-events-popover{width:calc(100vw - 16px)}}
     `;
@@ -225,6 +245,8 @@
     });
     const close = document.createElement('button'); close.type = 'button'; close.className = 'rsq-events-icon'; close.textContent = '×'; close.title = 'Закрыть'; close.addEventListener('click', hide);
     head.append(title, unreadPill, spacer, refresh, close);
+    head.title = 'Перетащите за заголовок · двойной клик вернёт окно на место';
+    makeDraggable(head);
 
     const controls = document.createElement('div'); controls.className = 'rsq-events-controls';
     const filterLabel = document.createElement('label');
@@ -238,20 +260,107 @@
     list = document.createElement('div'); list.className = 'rsq-events-list';
     const foot = document.createElement('div'); foot.className = 'rsq-events-foot';
     popover.append(head, tabsRow, controls, list, foot); document.body.appendChild(popover);
+    watchListScroll();
+    watchSize();
+    applySize();
     return popover;
   }
 
+  // --- размер и положение ---------------------------------------------------
+
+  function detached() { return Number.isFinite(geometry.left) && Number.isFinite(geometry.top); }
+  function saveGeometry() {
+    geometryReady = true;
+    clearTimeout(geometrySaveTimer);
+    geometrySaveTimer = setTimeout(() => {
+      void chrome.storage.local.set({ [UI_KEY]: { ...geometry } }).catch(() => {});
+    }, 300);
+  }
+  // Высоту задаём явно: иначе список из полутора сотен карточек растянет окно
+  // на весь экран, и тянуть его за угол будет уже некуда.
+  function targetSize() {
+    const width = Number.isFinite(geometry.width) ? geometry.width : DEFAULT_WIDTH;
+    const height = Number.isFinite(geometry.height) ? geometry.height : DEFAULT_HEIGHT;
+    return {
+      width: Math.round(Math.max(MIN_WIDTH, Math.min(width, innerWidth - 20))),
+      height: Math.round(Math.max(MIN_HEIGHT, Math.min(height, innerHeight - 24))),
+    };
+  }
+  function applySize() {
+    if (!popover) return;
+    const size = targetSize();
+    popover.style.width = `${size.width}px`;
+    popover.style.height = `${size.height}px`;
+  }
+  function watchSize() {
+    if (sizeObserver || typeof ResizeObserver !== 'function') return;
+    sizeObserver = new ResizeObserver(() => {
+      // До чтения хранилища окно стоит на размере по умолчанию — сохранять его рано.
+      if (!geometryReady) return;
+      // Ручку тянет только человек: браузер пишет размер в инлайн-стиль.
+      const width = Math.round(parseFloat(popover.style.width));
+      const height = Math.round(parseFloat(popover.style.height));
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+      // Размер, выставленный самим applySize, ничего не меняет: иначе окно
+      // браузера, ужатое на время, навсегда ужало бы и сохранённый размер.
+      const size = targetSize();
+      if (width === size.width && height === size.height) return;
+      geometry = { ...geometry, width, height };
+      if (open) place();
+      saveGeometry();
+    });
+    sizeObserver.observe(popover);
+  }
+  function makeDraggable(handle) {
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || event.target.closest('button, input, a')) return;
+      const rect = popover.getBoundingClientRect();
+      const startX = event.clientX; const startY = event.clientY;
+      let moved = false;
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - startX; const dy = moveEvent.clientY - startY;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+        if (!moved) { moved = true; popover.classList.add('is-dragging'); handle.setPointerCapture(event.pointerId); }
+        geometry = { ...geometry, left: rect.left + dx, top: rect.top + dy };
+        place();
+      };
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        popover.classList.remove('is-dragging');
+        if (moved) saveGeometry();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
+    handle.addEventListener('dblclick', (event) => {
+      if (event.target.closest('button, input, a')) return;
+      geometry = { left: null, top: null, width: null, height: null };
+      applySize(); place(); saveGeometry();
+    });
+  }
+
   function place() {
-    const button = anchorButton?.isConnected ? anchorButton : buttons.find((node) => node.isConnected);
-    if (!button || !popover) return;
-    anchorButton = button;
-    const rect = button.getBoundingClientRect();
-    popover.style.display = 'grid'; popover.style.visibility = 'hidden';
+    if (!popover) return;
     const width = popover.offsetWidth; const height = popover.offsetHeight;
-    let left = Math.min(innerWidth - width - 8, Math.max(8, rect.right - width));
-    let top = rect.bottom + 7;
-    if (top + height > innerHeight - 8) top = Math.max(8, rect.top - height - 7);
-    popover.style.left = `${left}px`; popover.style.top = `${top}px`; popover.style.visibility = 'visible';
+    let left; let top;
+    if (detached()) {
+      left = geometry.left; top = geometry.top;
+    } else {
+      const button = anchorButton?.isConnected ? anchorButton : buttons.find((node) => node.isConnected);
+      if (!button) return;
+      anchorButton = button;
+      const rect = button.getBoundingClientRect();
+      left = rect.right - width;
+      top = rect.bottom + 7;
+      if (top + height > innerHeight - 8) top = rect.top - height - 7;
+    }
+    left = Math.max(8, Math.min(left, innerWidth - width - 8));
+    top = Math.max(8, Math.min(top, innerHeight - height - 8));
+    if (detached()) geometry = { ...geometry, left, top };
+    popover.style.left = `${left}px`; popover.style.top = `${top}px`;
   }
 
   function part(className, text) {
@@ -389,28 +498,73 @@
     if (unreadOnly) return 'Непрочитанных изменений нет.';
     return activeTab === 'all' ? 'Событий пока нет.' : 'В этой вкладке пока нет событий.';
   }
-  function render() {
-    updateButton(); renderTabs(); if (!list) return;
+  function appendBatch() {
+    if (!list || queueIndex >= queue.length) return;
+    const fragment = document.createDocumentFragment();
+    const end = Math.min(queue.length, queueIndex + RENDER_BATCH);
+    for (; queueIndex < end; queueIndex += 1) fragment.appendChild(eventNode(queue[queueIndex]));
+    sentinel?.remove();
+    list.appendChild(fragment);
+    const rest = queue.length - queueIndex;
+    renderFoot(queueIndex, queue.length);
+    if (!rest) return;
+    if (!sentinel) { sentinel = document.createElement('div'); sentinel.className = 'rsq-events-sentinel'; }
+    sentinel.textContent = `Ещё ${rest}…`;
+    list.appendChild(sentinel);
+    // Порция могла не заполнить видимую часть — тогда прокрутки не будет и
+    // подгружать придётся сразу.
+    requestAnimationFrame(() => {
+      if (open && sentinel?.isConnected && list.scrollHeight <= list.clientHeight + 4) appendBatch();
+    });
+  }
+  function watchListScroll() {
+    list.addEventListener('scroll', () => {
+      if (!open || queueIndex >= queue.length) return;
+      if (list.scrollTop + list.clientHeight >= list.scrollHeight - 400) appendBatch();
+    }, { passive: true });
+  }
+  function renderFoot(shown, total) {
+    const foot = popover?.querySelector('.rsq-events-foot');
+    if (!foot) return;
+    const scope = activeTab === 'all' ? null : tabScope(activeTab);
+    const counts = [
+      total ? (shown < total ? `Событий: ${shown} из ${total}` : `Событий: ${total}`) : '',
+      scope ? `задач в области: ${scope.issueIds.length}` : '',
+    ].filter(Boolean).join(' · ');
+    foot.replaceChildren(
+      part('', counts),
+      part('', feed.checkedAt ? `Проверено ${shortTime(feed.checkedAt)}` : 'Ещё не проверялось'),
+    );
+  }
+  function renderList() {
+    if (!list) return;
+    listDirty = false;
+    sentinel?.remove();
     list.replaceChildren();
-    const events = tabEvents(activeTab).filter((event) => !unreadOnly || !feed.readKeys?.[event.key]);
-    if (!events.length) {
+    list.scrollTop = 0;
+    queue = tabEvents(activeTab).filter((event) => !unreadOnly || !feed.readKeys?.[event.key]);
+    queueIndex = 0;
+    if (!queue.length) {
       const empty = document.createElement('div'); empty.className = 'rsq-events-empty';
       empty.textContent = emptyText(); list.appendChild(empty);
-    } else for (const event of events) list.appendChild(eventNode(event));
-    const foot = popover?.querySelector('.rsq-events-foot');
-    if (foot) {
-      const scope = activeTab === 'all' ? null : tabScope(activeTab);
-      const counts = [events.length ? `Событий: ${events.length}` : '', scope ? `задач в области: ${scope.issueIds.length}` : '']
-        .filter(Boolean).join(' · ');
-      foot.replaceChildren(
-        part('', counts),
-        part('', feed.checkedAt ? `Проверено ${shortTime(feed.checkedAt)}` : 'Ещё не проверялось'),
-      );
-    }
-    if (open) place();
+    } else appendBatch();
+    renderFoot(queueIndex, queue.length);
+  }
+  function render() {
+    updateButton(); renderTabs();
+    // Пока окно закрыто, карточки не строим: лента обновляется каждые несколько
+    // минут, а перерисовка всего списка в фоне ничего не даёт.
+    if (!open) { listDirty = true; return; }
+    renderList();
+    place();
   }
   async function show() {
-    open = true; (popover || createPopover()).style.display = 'grid'; render(); place();
+    open = true;
+    (popover || createPopover()).style.display = 'grid';
+    renderTabs(); updateButton();
+    if (listDirty || !list.childElementCount) renderList();
+    place();
+    requestAnimationFrame(() => { if (open) popover.classList.add('is-open'); });
     if (!refreshing) {
       refreshing = true;
       try { await chrome.runtime.sendMessage({ type: 'events.refresh' }); }
@@ -431,7 +585,10 @@
   function hide() {
     if (!open) return;
     open = false;
-    if (popover) popover.style.display = 'none';
+    if (popover) { popover.classList.remove('is-open'); popover.style.display = 'none'; }
+    // Карточки в скрытом окне только занимают память и тормозят следующий рендер.
+    if (list) { sentinel?.remove(); list.replaceChildren(); }
+    queue = []; queueIndex = 0; listDirty = true;
     markCurrentRead();
   }
   function toggle() { if (open) hide(); else void show(); }
@@ -492,9 +649,28 @@
     mountButtons(settings.eventButtonPlacement);
     render();
   }).catch(() => mountButtons());
-  chrome.storage.local.get([FEED_KEY, SCOPE_KEY]).then((data) => {
+  function readGeometry(stored) {
+    // Сброшенное положение хранится как null, а Number(null) — это ноль,
+    // из-за которого окно уехало бы в левый верхний угол.
+    const number = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+    const size = (value, min) => {
+      const parsed = number(value);
+      return parsed === null ? null : Math.max(min, Math.round(parsed));
+    };
+    return {
+      left: number(stored?.left), top: number(stored?.top),
+      width: size(stored?.width, MIN_WIDTH), height: size(stored?.height, MIN_HEIGHT),
+    };
+  }
+  chrome.storage.local.get([FEED_KEY, SCOPE_KEY, UI_KEY]).then((data) => {
     feed = data[FEED_KEY] || feed;
     scopes = data[SCOPE_KEY] || scopes;
+    // Если человек успел подвинуть окно раньше ответа хранилища, его выбор главнее.
+    if (!geometryReady) {
+      geometry = readGeometry(data[UI_KEY]);
+      geometryReady = true;
+      if (popover) { applySize(); if (open) place(); }
+    }
     render();
   });
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -526,6 +702,18 @@
     if (!inside) hide();
   });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hide(); });
-  addEventListener('resize', () => { if (open) place(); }, { passive: true });
-  addEventListener('scroll', hide, { passive: true });
+  addEventListener('resize', () => { if (!open) return; applySize(); place(); }, { passive: true });
+  // Пока окно висит у кнопки, оно едет вместе со страницей; перетащенное окно
+  // человек поставил сам — прокрутка его не трогает.
+  addEventListener('scroll', () => {
+    if (!open || detached() || scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (!open || detached()) return;
+      // Кнопка уехала за край — окно остаётся там, где стояло, а не прилипает к краю.
+      const rect = anchorButton?.getBoundingClientRect();
+      if (rect && (rect.bottom < 0 || rect.top > innerHeight)) return;
+      place();
+    });
+  }, { passive: true });
 })();
