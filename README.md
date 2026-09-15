@@ -52,3 +52,13 @@
 ## Разработка
 
 Расширение загружается в браузер непосредственно из папки репозитория. После изменения файлов нажмите «Обновить» на странице управления расширениями и перезагрузите вкладку Redmine.
+
+## Сборка пакета для Chrome Web Store
+
+Поднимите patch-версию в `manifest.json` и выполните из PowerShell в корне репозитория:
+
+```powershell
+.\chrome-web-store\build.ps1
+```
+
+Скрипт прогоняет `node --check` по всем runtime-файлам, проверяет иконки из манифеста и собирает `chrome-web-store/package/redmine-qol-lite-<версия>.zip` с `manifest.json` в корне архива. Подробности, список проверок и порядок публикации — в `chrome-web-store/README.md` и `chrome-web-store/submission-checklist.md`.

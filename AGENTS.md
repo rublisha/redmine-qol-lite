@@ -18,7 +18,7 @@ Keep the extension lightweight and make narrowly scoped changes. Preserve compat
 - `content-favorites.js` — favorite issue stars and compact sidebar list.
 - `popup.html`, `popup.css`, `popup.js` — settings UI.
 
-Content scripts are registered dynamically in `background.js`. When adding a new content script, also add it to `SCRIPT_FILES`; putting a file in the repository is not enough.
+Content scripts are registered dynamically in `background.js`. When adding a new content script, also add it to `SCRIPT_FILES` in `background.js` and to `$runtimeFiles` in `chrome-web-store/build.ps1`; putting a file in the repository is not enough, and a file missing from `$runtimeFiles` is silently left out of the store package.
 
 ## Development rules
 
@@ -47,3 +47,9 @@ There is no automated test suite. Before handing off a change:
 5. For UI changes, reload the unpacked extension and refresh the Redmine tab. Check both an issue page and an issue list when relevant.
 
 The unpacked extension must be loaded from the repository root containing `manifest.json`, not from the `.git` directory.
+
+## Releasing
+
+The Chrome Web Store package is built by `chrome-web-store/build.ps1`, which validates the runtime files and writes `chrome-web-store/package/redmine-qol-lite-<version>.zip`. Bump `manifest.json` first; the archive name and the store upload both come from that version. The build, its checks, and the submission steps are documented in `chrome-web-store/README.md` and `chrome-web-store/submission-checklist.md`.
+
+Do not build the archive with `Compress-Archive`: in Windows PowerShell 5.1 it writes `\` separators into entry names and Chrome then fails to resolve the icons. Run `generate-assets.ps1` only when the artwork actually changed.
